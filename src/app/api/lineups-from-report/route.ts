@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
-import * as cheerio from "cheerio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -59,207 +58,111 @@ function rowToPlayer(r: any): LineupPlayer {
   };
 }
 
-async function scrapeLineupsFromPage(url: string) {
-  const res = await fetch(url, {
+async function fetchLineupsFromApi(matchId: string) {
+  const apiUrl = `https://tulospalvelu.palloliitto.fi/api/public/match.php?match_id=${matchId}&method=getMatch`;
+
+  const res = await fetch(apiUrl, {
     headers: {
+      accept: "application/json,text/plain,*/*",
       "user-agent":
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
-      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      "accept-language": "en-GB,en;q=0.9,fi;q=0.8",
-      pragma: "no-cache",
-      "cache-control": "no-cache",
     },
     cache: "no-store",
   });
 
   if (!res.ok) {
-    throw new Error(`Failed to fetch lineup page (${res.status})`);
+    throw new Error(`Failed to fetch match api (${res.status})`);
   }
 
-  const html = await res.text();
-  if (!html || html.length < 500) {
-    throw new Error("Lineup page returned empty HTML");
+  const json = await res.json();
+  const match = json?.match;
+
+  if (!match) {
+    throw new Error("Match API returned no match object");
   }
 
-  const $ = cheerio.load(html);
-
-  function txt(input: cheerio.Cheerio<any>) {
-    return input.text().replace(/\s+/g, " ").trim();
+  const allLineups = Array.isArray(match.lineups) ? match.lineups : [];
+  if (allLineups.length === 0) {
+    throw new Error("Match API returned no lineups");
   }
 
-  function cleanName(raw: string) {
-    return raw
-      .replace(/\|\s*MV/gi, "")
-      .replace(/\|\s*C/gi, "")
-      .replace(/\bMV\b/gi, "")
-      .replace(/\bC\b/gi, "")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
+  const homeTeamId = match.team_A_id ? String(match.team_A_id) : null;
+  const awayTeamId = match.team_B_id ? String(match.team_B_id) : null;
 
-  function parsePlayerRow(el: any) {
-    const row = $(el);
+  const homeRows = allLineups.filter((p: any) => String(p.team_id ?? "") === String(homeTeamId ?? ""));
+  const awayRows = allLineups.filter((p: any) => String(p.team_id ?? "") === String(awayTeamId ?? ""));
 
-    let shirtText = txt(row.find(".shirtnumber").first());
-    let shirtNo = /^\d+$/.test(shirtText) ? Number(shirtText) : null;
+  function toPlayer(p: any, fallbackPrefix: string, i: number): LineupPlayer {
+    const firstName = String(p.first_name ?? "").trim();
+    const lastName = String(p.last_name ?? "").trim();
+    const fullName =
+      String(p.player_name ?? "").trim() ||
+      [firstName, lastName].filter(Boolean).join(" ") ||
+      "Unknown";
 
-    const link = row.find("td:nth-child(2) a").first();
-    const nameText = cleanName(txt(link));
-    if (!nameText) return null;
-
-    if (shirtNo == null) {
-      const embeddedShirt = txt(link.find(".shirtnumber").first());
-      shirtNo = /^\d+$/.test(embeddedShirt) ? Number(embeddedShirt) : null;
-    }
-
-    const href = link.attr("href") || "";
-    const m = href.match(/\/person\/(\d+)\//);
-    const splPlayerId = m ? m[1] : null;
+    const shirtText = String(p.shirt_number ?? "").trim();
+    const shirtNo = /^\d+$/.test(shirtText) ? Number(shirtText) : null;
 
     return {
-      spl_player_id: splPlayerId,
-      name: nameText,
+      spl_player_id: p.player_id != null ? String(p.player_id) : `${fallbackPrefix}-${i}`,
+      name: fullName,
       shirt_no: shirtNo,
     };
   }
 
-  const teamLinks = $("h2.teamname a");
-
-  if (teamLinks.length < 2) {
-    throw new Error(
-      JSON.stringify({
-        message: "Could not find both team headings",
-        hasMatchdetails: html.includes("matchdetails"),
-        hasTeamname: html.includes("teamname"),
-        hasAloituskokoonpano: html.toLowerCase().includes("aloituskokoonpano"),
-        hasVaihtopelaajat: html.toLowerCase().includes("vaihtopelaajat"),
-        sample: html.slice(0, 2000),
-      }),
-    );
-  }
-
-  const homeHref = teamLinks.eq(0).attr("href") || "";
-  const awayHref = teamLinks.eq(1).attr("href") || "";
-
-  const homeMatch = homeHref.match(/\/team\/(\d+)\//);
-  const awayMatch = awayHref.match(/\/team\/(\d+)\//);
-
-  const homeTeamId = homeMatch ? homeMatch[1] : null;
-  const awayTeamId = awayMatch ? awayMatch[1] : null;
-
-  const homeName = txt(teamLinks.eq(0)) || "Home";
-  const awayName = txt(teamLinks.eq(1)) || "Away";
-
-  const headings = $("h3").toArray();
-
-  const startersHeading = headings.find((h) =>
-    $(h).text().toLowerCase().includes("aloituskokoonpano"),
-  );
-  const benchHeading = headings.find((h) =>
-    $(h).text().toLowerCase().includes("vaihtopelaajat"),
-  );
-
-  if (!startersHeading) {
-    throw new Error(
-      JSON.stringify({
-        message: "Could not find Aloituskokoonpano section",
-        sample: html.slice(0, 2000),
-      }),
-    );
-  }
-
-  if (!benchHeading) {
-    throw new Error(
-      JSON.stringify({
-        message: "Could not find Vaihtopelaajat section",
-        sample: html.slice(0, 2000),
-      }),
-    );
-  }
-
-  const starterCols = $(startersHeading).next().find(".playerlist.col");
-  const benchCols = $(benchHeading).next().find(".col");
-
-  if (starterCols.length < 2) {
-    throw new Error("Could not find both starter columns");
-  }
-  if (benchCols.length < 2) {
-    throw new Error("Could not find both bench columns");
-  }
-
   const homeStarters = uniqById(
-    starterCols
-      .eq(0)
-      .find("tbody tr")
-      .toArray()
-      .map(parsePlayerRow)
-      .filter(Boolean)
-      .map((p: any, i: number) => ({
-        spl_player_id: p.spl_player_id ?? `web-home-xi-${i}-${p.name}`,
-        name: p.name,
-        shirt_no: p.shirt_no,
-      })),
-  );
-
-  const awayStarters = uniqById(
-    starterCols
-      .eq(1)
-      .find("tbody tr")
-      .toArray()
-      .map(parsePlayerRow)
-      .filter(Boolean)
-      .map((p: any, i: number) => ({
-        spl_player_id: p.spl_player_id ?? `web-away-xi-${i}-${p.name}`,
-        name: p.name,
-        shirt_no: p.shirt_no,
-      })),
+    homeRows
+      .filter((p: any) => String(p.start) === "1")
+      .map((p: any, i: number) => toPlayer(p, "api-home-xi", i)),
   );
 
   const homeBench = uniqById(
-    benchCols
-      .eq(0)
-      .find("tbody tr")
-      .toArray()
-      .map(parsePlayerRow)
-      .filter(Boolean)
-      .map((p: any, i: number) => ({
-        spl_player_id: p.spl_player_id ?? `web-home-bench-${i}-${p.name}`,
-        name: p.name,
-        shirt_no: p.shirt_no,
-      })),
+    homeRows
+      .filter((p: any) => String(p.start) !== "1")
+      .map((p: any, i: number) => toPlayer(p, "api-home-bench", i)),
+  );
+
+  const awayStarters = uniqById(
+    awayRows
+      .filter((p: any) => String(p.start) === "1")
+      .map((p: any, i: number) => toPlayer(p, "api-away-xi", i)),
   );
 
   const awayBench = uniqById(
-    benchCols
-      .eq(1)
-      .find("tbody tr")
-      .toArray()
-      .map(parsePlayerRow)
-      .filter(Boolean)
-      .map((p: any, i: number) => ({
-        spl_player_id: p.spl_player_id ?? `web-away-bench-${i}-${p.name}`,
-        name: p.name,
-        shirt_no: p.shirt_no,
-      })),
+    awayRows
+      .filter((p: any) => String(p.start) !== "1")
+      .map((p: any, i: number) => toPlayer(p, "api-away-bench", i)),
   );
-
-  if (homeStarters.length < 8 || awayStarters.length < 8) {
-    throw new Error("Could not parse lineup tables cleanly from webpage");
-  }
 
   const teams: TeamsBlock = {
     home: {
-      spl_team_id: homeTeamId ?? null,
-      team_name: homeName,
+      spl_team_id: homeTeamId,
+      team_name: match.team_A_name ?? null,
     },
     away: {
-      spl_team_id: awayTeamId ?? null,
-      team_name: awayName,
+      spl_team_id: awayTeamId,
+      team_name: match.team_B_name ?? null,
     },
   };
 
   return {
     teams,
+    matchMeta: {
+      home_score: match.fs_A != null && match.fs_A !== "" ? Number(match.fs_A) : null,
+      away_score: match.fs_B != null && match.fs_B !== "" ? Number(match.fs_B) : null,
+      kickoff_at:
+        match.date && match.time
+          ? `${match.date}T${match.time}${match.time_zone_offset ?? ""}`
+          : null,
+      competition: {
+        gender:
+          String(match.category_group_name ?? "").toLowerCase().includes("naiset") ? "Female" :
+          String(match.category_group_name ?? "").toLowerCase().includes("miehet") ? "Male" :
+          null,
+        tier: null,
+        category_name: match.category_name ?? null,
+      },
+    },
     home: { starters: homeStarters, bench: homeBench } satisfies TeamLineup,
     away: { starters: awayStarters, bench: awayBench } satisfies TeamLineup,
   };
@@ -392,55 +295,23 @@ export async function GET(req: Request) {
     });
   }
 
-  try {
-    const scrapeUrl =
-      inputUrl && inputUrl.startsWith("http")
-        ? inputUrl
-        : `https://tulospalvelu.palloliitto.fi/match/${matchId}/lineups`;
-
-    const scraped = await scrapeLineupsFromPage(scrapeUrl);
-
-    const { data: fallbackMatchRow } = await supabaseAdmin
-      .from("matches")
-      .select("spl_competition_id, spl_category_id, home_score, away_score, kickoff_at")
-      .eq("spl_match_id", matchId)
-      .maybeSingle();
-
-    let fallbackCompRow: any = null;
-    if (fallbackMatchRow?.spl_competition_id && fallbackMatchRow?.spl_category_id) {
-      const { data } = await supabaseAdmin
-        .from("competitions")
-        .select("gender, tier, category_name")
-        .eq("spl_competition_id", fallbackMatchRow.spl_competition_id)
-        .eq("spl_category_id", fallbackMatchRow.spl_category_id)
-        .maybeSingle();
-
-      fallbackCompRow = data ?? null;
-    }
+    try {
+    const apiData = await fetchLineupsFromApi(matchId);
 
     return NextResponse.json({
       inputUrl: inputUrl || `match:${matchId}`,
-      fetchUrl: `web:${matchId}`,
+      fetchUrl: `api:getMatch:${matchId}`,
       matchId,
-      match: {
-        home_score: fallbackMatchRow?.home_score ?? null,
-        away_score: fallbackMatchRow?.away_score ?? null,
-        kickoff_at: fallbackMatchRow?.kickoff_at ?? null,
-        competition: {
-          gender: fallbackCompRow?.gender ?? null,
-          tier: fallbackCompRow?.tier ?? null,
-          category_name: fallbackCompRow?.category_name ?? null,
-        },
-      },
+      match: apiData.matchMeta,
       counts: {
-        startersHome: scraped.home.starters.length,
-        startersAway: scraped.away.starters.length,
-        benchHome: scraped.home.bench.length,
-        benchAway: scraped.away.bench.length,
+        startersHome: apiData.home.starters.length,
+        startersAway: apiData.away.starters.length,
+        benchHome: apiData.home.bench.length,
+        benchAway: apiData.away.bench.length,
       },
-      teams: scraped.teams,
-      home: scraped.home,
-      away: scraped.away,
+      teams: apiData.teams,
+      home: apiData.home,
+      away: apiData.away,
     });
   } catch (e: any) {
     return NextResponse.json(
