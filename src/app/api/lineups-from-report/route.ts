@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
-import chromium from "@sparticuz/chromium";
-import { chromium as playwright } from "playwright-core";
+import * as cheerio from "cheerio";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -60,195 +59,185 @@ function rowToPlayer(r: any): LineupPlayer {
   };
 }
 
-async function launchBrowser() {
-  const isVercel = process.env.VERCEL === "1";
+async function scrapeLineupsFromPage(url: string) {
+  const res = await fetch(url, {
+    headers: {
+      "user-agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
+      accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      "accept-language": "en-GB,en;q=0.9,fi;q=0.8",
+      pragma: "no-cache",
+      "cache-control": "no-cache",
+    },
+    cache: "no-store",
+  });
 
-  if (isVercel) {
-    const executablePath = await chromium.executablePath();
-
-    if (!executablePath) {
-      throw new Error("Sparticuz Chromium executable not found on Vercel");
-    }
-
-    console.log("Using Vercel Chromium:", executablePath);
-
-    return playwright.launch({
-      args: chromium.args,
-      executablePath,
-      headless: true,
-    });
+  if (!res.ok) {
+    throw new Error(`Failed to fetch lineup page (${res.status})`);
   }
 
-  console.log("Using local Playwright browser");
+  const html = await res.text();
+  if (!html || html.length < 500) {
+    throw new Error("Lineup page returned empty HTML");
+  }
 
-  return playwright.launch({
-    headless: true,
-  });
-}
+  const $ = cheerio.load(html);
 
-async function scrapeLineupsFromPage(url: string) {
-  const browser = await launchBrowser();
+  function txt(input: cheerio.Cheerio<any>) {
+    return input.text().replace(/\s+/g, " ").trim();
+  }
 
-  try {
-    const page = await browser.newPage();
-    await page.goto(url, { waitUntil: "domcontentloaded", timeout: 45000 });
+  function cleanName(raw: string) {
+    return raw
+      .replace(/\|\s*MV/gi, "")
+      .replace(/\|\s*C/gi, "")
+      .replace(/\bMV\b/gi, "")
+      .replace(/\bC\b/gi, "")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
 
-    const cookieButton = page.getByText(/sallin evästeet|accept|allow/i).first();
-    if (await cookieButton.isVisible().catch(() => false)) {
-      await cookieButton.click().catch(() => {});
-      await page.waitForTimeout(1000);
+  function parsePlayerRow(el: unknown) {
+  const row = $(el as any);
+
+    let shirtText = txt(row.find(".shirtnumber").first());
+    let shirtNo = /^\d+$/.test(shirtText) ? Number(shirtText) : null;
+
+    const link = row.find("td:nth-child(2) a").first();
+    const nameText = cleanName(txt(link));
+    if (!nameText) return null;
+
+    if (shirtNo == null) {
+      const embeddedShirt = txt(link.find(".shirtnumber").first());
+      shirtNo = /^\d+$/.test(embeddedShirt) ? Number(embeddedShirt) : null;
     }
 
-    await page.waitForLoadState("networkidle", { timeout: 45000 }).catch(() => {});
-    await page.waitForTimeout(1500);
+    const href = link.attr("href") || "";
+    const m = href.match(/\/person\/(\d+)\//);
+    const splPlayerId = m ? m[1] : null;
 
-    const result = await page.evaluate(() => {
-      function txt(el: Element | null | undefined) {
-        return (el?.textContent || "").replace(/\s+/g, " ").trim();
-      }
+    return {
+      spl_player_id: splPlayerId,
+      name: nameText,
+      shirt_no: shirtNo,
+    };
+  }
 
-      function cleanName(raw: string) {
-        return raw
-          .replace(/\|\s*MV/gi, "")
-          .replace(/\|\s*C/gi, "")
-          .replace(/\bMV\b/gi, "")
-          .replace(/\bC\b/gi, "")
-          .replace(/\s+/g, " ")
-          .trim();
-      }
+  const teamLinks = $("h2.teamname a");
+  if (teamLinks.length < 2) {
+    throw new Error("Could not find both team headings");
+  }
 
-      function parsePlayerRow(tr: Element) {
-        const shirtText = txt(tr.querySelector(".shirtnumber"));
-        const shirtNo = /^\d+$/.test(shirtText) ? Number(shirtText) : null;
+  const homeHref = teamLinks.eq(0).attr("href") || "";
+  const awayHref = teamLinks.eq(1).attr("href") || "";
 
-        const link = tr.querySelector("td:nth-child(2) a");
-        const nameText = cleanName(txt(link));
-        if (!nameText) return null;
+  const homeMatch = homeHref.match(/\/team\/(\d+)\//);
+  const awayMatch = awayHref.match(/\/team\/(\d+)\//);
 
-        const href = link?.getAttribute("href") || "";
-        const m = href.match(/\/person\/(\d+)\//);
-        const splPlayerId = m ? m[1] : null;
+  const homeTeamId = homeMatch ? homeMatch[1] : null;
+  const awayTeamId = awayMatch ? awayMatch[1] : null;
 
-        return {
-          spl_player_id: splPlayerId,
-          name: nameText,
-          shirt_no: shirtNo,
-        };
-      }
+  const homeName = txt(teamLinks.eq(0)) || "Home";
+  const awayName = txt(teamLinks.eq(1)) || "Away";
 
-      const teamLinks = Array.from(document.querySelectorAll("h2.teamname a"));
-      const homeHref = teamLinks[0]?.getAttribute("href") || "";
-      const awayHref = teamLinks[1]?.getAttribute("href") || "";
+  const headings = $("h3").toArray();
 
-      const homeMatch = homeHref.match(/\/team\/(\d+)\//);
-      const awayMatch = awayHref.match(/\/team\/(\d+)\//);
+  const startersHeading = headings.find((h) =>
+    $(h).text().toLowerCase().includes("aloituskokoonpano"),
+  );
+  const benchHeading = headings.find((h) =>
+    $(h).text().toLowerCase().includes("vaihtopelaajat"),
+  );
 
-      const homeTeamId = homeMatch ? homeMatch[1] : null;
-      const awayTeamId = awayMatch ? awayMatch[1] : null;
+  if (!startersHeading) throw new Error("Could not find Aloituskokoonpano section");
+  if (!benchHeading) throw new Error("Could not find Vaihtopelaajat section");
 
-      const homeName = txt(teamLinks[0]) || "Home";
-      const awayName = txt(teamLinks[1]) || "Away";
+  const starterCols = $(startersHeading).next().find(".playerlist.col");
+  const benchCols = $(benchHeading).next().find(".col");
 
-      const headings = Array.from(document.querySelectorAll("h3"));
-      const startersHeading = headings.find((h) =>
-        txt(h).toLowerCase().includes("aloituskokoonpano"),
-      );
-      const benchHeading = headings.find((h) =>
-        txt(h).toLowerCase().includes("vaihtopelaajat"),
-      );
+  if (starterCols.length < 2) {
+    throw new Error("Could not find both starter columns");
+  }
+  if (benchCols.length < 2) {
+    throw new Error("Could not find both bench columns");
+  }
 
-      if (!startersHeading) throw new Error("Could not find Aloituskokoonpano section");
-      if (!benchHeading) throw new Error("Could not find Vaihtopelaajat section");
-
-      const starterCols = startersHeading.nextElementSibling
-        ? Array.from(startersHeading.nextElementSibling.querySelectorAll(".playerlist.col"))
-        : [];
-      const benchCols = benchHeading.nextElementSibling
-        ? Array.from(benchHeading.nextElementSibling.querySelectorAll(".col"))
-        : [];
-
-      if (starterCols.length < 2) throw new Error("Could not find both starter columns");
-      if (benchCols.length < 2) throw new Error("Could not find both bench columns");
-
-      return {
-        teams: {
-          home: { spl_team_id: homeTeamId, team_name: homeName },
-          away: { spl_team_id: awayTeamId, team_name: awayName },
-        },
-        home: {
-          starters: Array.from(starterCols[0].querySelectorAll("tbody tr"))
-            .map(parsePlayerRow)
-            .filter(Boolean),
-          bench: Array.from(benchCols[0].querySelectorAll("tbody tr"))
-            .map(parsePlayerRow)
-            .filter(Boolean),
-        },
-        away: {
-          starters: Array.from(starterCols[1].querySelectorAll("tbody tr"))
-            .map(parsePlayerRow)
-            .filter(Boolean),
-          bench: Array.from(benchCols[1].querySelectorAll("tbody tr"))
-            .map(parsePlayerRow)
-            .filter(Boolean),
-        },
-      };
-    });
-
-    const homeStarters = uniqById(
-      result.home.starters.map((p: any, i: number) => ({
+  const homeStarters = uniqById(
+    starterCols
+      .eq(0)
+      .find("tbody tr")
+      .toArray()
+      .map(parsePlayerRow)
+      .filter(Boolean)
+      .map((p: any, i: number) => ({
         spl_player_id: p.spl_player_id ?? `web-home-xi-${i}-${p.name}`,
         name: p.name,
         shirt_no: p.shirt_no,
       })),
-    );
+  );
 
-    const awayStarters = uniqById(
-      result.away.starters.map((p: any, i: number) => ({
+  const awayStarters = uniqById(
+    starterCols
+      .eq(1)
+      .find("tbody tr")
+      .toArray()
+      .map(parsePlayerRow)
+      .filter(Boolean)
+      .map((p: any, i: number) => ({
         spl_player_id: p.spl_player_id ?? `web-away-xi-${i}-${p.name}`,
         name: p.name,
         shirt_no: p.shirt_no,
       })),
-    );
+  );
 
-    const homeBench = uniqById(
-      result.home.bench.map((p: any, i: number) => ({
+  const homeBench = uniqById(
+    benchCols
+      .eq(0)
+      .find("tbody tr")
+      .toArray()
+      .map(parsePlayerRow)
+      .filter(Boolean)
+      .map((p: any, i: number) => ({
         spl_player_id: p.spl_player_id ?? `web-home-bench-${i}-${p.name}`,
         name: p.name,
         shirt_no: p.shirt_no,
       })),
-    );
+  );
 
-    const awayBench = uniqById(
-      result.away.bench.map((p: any, i: number) => ({
+  const awayBench = uniqById(
+    benchCols
+      .eq(1)
+      .find("tbody tr")
+      .toArray()
+      .map(parsePlayerRow)
+      .filter(Boolean)
+      .map((p: any, i: number) => ({
         spl_player_id: p.spl_player_id ?? `web-away-bench-${i}-${p.name}`,
         name: p.name,
         shirt_no: p.shirt_no,
       })),
-    );
+  );
 
-    if (homeStarters.length < 8 || awayStarters.length < 8) {
-      throw new Error("Could not parse lineup tables cleanly from webpage");
-    }
-
-    const teams: TeamsBlock = {
-      home: {
-        spl_team_id: result.teams.home.spl_team_id ?? null,
-        team_name: result.teams.home.team_name,
-      },
-      away: {
-        spl_team_id: result.teams.away.spl_team_id ?? null,
-        team_name: result.teams.away.team_name,
-      },
-    };
-
-    return {
-      teams,
-      home: { starters: homeStarters, bench: homeBench } satisfies TeamLineup,
-      away: { starters: awayStarters, bench: awayBench } satisfies TeamLineup,
-    };
-  } finally {
-    await browser.close().catch(() => {});
+  if (homeStarters.length < 8 || awayStarters.length < 8) {
+    throw new Error("Could not parse lineup tables cleanly from webpage");
   }
+
+  const teams: TeamsBlock = {
+    home: {
+      spl_team_id: homeTeamId ?? null,
+      team_name: homeName,
+    },
+    away: {
+      spl_team_id: awayTeamId ?? null,
+      team_name: awayName,
+    },
+  };
+
+  return {
+    teams,
+    home: { starters: homeStarters, bench: homeBench } satisfies TeamLineup,
+    away: { starters: awayStarters, bench: awayBench } satisfies TeamLineup,
+  };
 }
 
 export async function GET(req: Request) {
