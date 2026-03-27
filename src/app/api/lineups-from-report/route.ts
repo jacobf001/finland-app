@@ -97,8 +97,8 @@ async function scrapeLineupsFromPage(url: string) {
       .trim();
   }
 
-  function parsePlayerRow(el: unknown) {
-  const row = $(el as any);
+  function parsePlayerRow(el: any) {
+    const row = $(el);
 
     let shirtText = txt(row.find(".shirtnumber").first());
     let shirtNo = /^\d+$/.test(shirtText) ? Number(shirtText) : null;
@@ -124,8 +124,18 @@ async function scrapeLineupsFromPage(url: string) {
   }
 
   const teamLinks = $("h2.teamname a");
+
   if (teamLinks.length < 2) {
-    throw new Error("Could not find both team headings");
+    throw new Error(
+      JSON.stringify({
+        message: "Could not find both team headings",
+        hasMatchdetails: html.includes("matchdetails"),
+        hasTeamname: html.includes("teamname"),
+        hasAloituskokoonpano: html.toLowerCase().includes("aloituskokoonpano"),
+        hasVaihtopelaajat: html.toLowerCase().includes("vaihtopelaajat"),
+        sample: html.slice(0, 2000),
+      }),
+    );
   }
 
   const homeHref = teamLinks.eq(0).attr("href") || "";
@@ -149,8 +159,23 @@ async function scrapeLineupsFromPage(url: string) {
     $(h).text().toLowerCase().includes("vaihtopelaajat"),
   );
 
-  if (!startersHeading) throw new Error("Could not find Aloituskokoonpano section");
-  if (!benchHeading) throw new Error("Could not find Vaihtopelaajat section");
+  if (!startersHeading) {
+    throw new Error(
+      JSON.stringify({
+        message: "Could not find Aloituskokoonpano section",
+        sample: html.slice(0, 2000),
+      }),
+    );
+  }
+
+  if (!benchHeading) {
+    throw new Error(
+      JSON.stringify({
+        message: "Could not find Vaihtopelaajat section",
+        sample: html.slice(0, 2000),
+      }),
+    );
+  }
 
   const starterCols = $(startersHeading).next().find(".playerlist.col");
   const benchCols = $(benchHeading).next().find(".col");
