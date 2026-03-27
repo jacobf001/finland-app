@@ -844,633 +844,461 @@ async function getLikelyXI(teamId: string, seasonYear: number, matchGender: stri
 }
 
 export async function GET(req: Request) {
-  const { searchParams } = new URL(req.url);
+  try {
+    const { searchParams } = new URL(req.url);
 
-  const inputUrl = searchParams.get("url");
-  if (!inputUrl) {
-    return NextResponse.json({ error: "Missing params", expected: "url" }, { status: 400 });
-  }
 
-  const seasonYear = parseSeasonYear(searchParams.get("season")) ?? new Date().getUTCFullYear();
-  const prevSeasonYear = seasonYear - 1;
-
-  const origin = new URL(req.url).origin;
-  const lineupRes = await fetch(
-    `${origin}/api/lineups-from-report?` + new URLSearchParams({ url: inputUrl }).toString(),
-    { cache: "no-store" },
-  );
-
-  const lineupJson = (await lineupRes.json()) as LineupsFromReportResponse & { error?: string };
-  if (!lineupRes.ok || lineupJson?.error) {
-    return NextResponse.json({ error: lineupJson?.error ?? "Failed to parse lineups" }, { status: 400 });
-  }
-
-  const teams: TeamsBlock = lineupJson.teams ?? {
-    home: { spl_team_id: null, team_name: null },
-    away: { spl_team_id: null, team_name: null },
-  };
-
-  const matchGender = lineupJson.match?.competition?.gender ?? null;
-  const matchCategoryName = lineupJson.match?.competition?.category_name ?? null;
-  const matchCategoryKey = normalizeCategoryKey(matchCategoryName);
-
-  const homePlayers = uniqById([...lineupJson.home.starters, ...lineupJson.home.bench]);
-  const awayPlayers = uniqById([...lineupJson.away.starters, ...lineupJson.away.bench]);
-  const allIds = uniqById([...homePlayers, ...awayPlayers]).map((p) => p.spl_player_id);
-  const allIdsNum = allIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
-
-  if (allIds.length === 0) {
-    return NextResponse.json({ error: "No players parsed from lineups" }, { status: 200 });
-  }
-
-  const [
-    { data: playerBirthRows, error: birthErr },
-    { data: seasonRawRows, error: seasonErr },
-    { data: prevSeasonRawRows, error: prevSeasonErr },
-  ] = await Promise.all([
-    supabaseAdmin.from("players").select("spl_player_id, birth_year").in("spl_player_id", allIdsNum),
-    supabaseAdmin
-      .from("player_season_stats")
-      .select(`
-        season_year,
-        spl_team_id,
-        spl_player_id,
-        player_name,
-        team_name,
-        club_name,
-        category_name,
-        gender,
-        tier,
-        appearances,
-        starts,
-        total_minutes,
-        goals,
-        yellow_cards,
-        red_cards
-      `)
-      .eq("season_year", seasonYear)
-      .in("spl_player_id", allIdsNum),
-    supabaseAdmin
-      .from("player_season_stats")
-      .select(`
-        season_year,
-        spl_team_id,
-        spl_player_id,
-        player_name,
-        team_name,
-        club_name,
-        category_name,
-        gender,
-        tier,
-        appearances,
-        starts,
-        total_minutes,
-        goals,
-        yellow_cards,
-        red_cards
-      `)
-      .eq("season_year", prevSeasonYear)
-      .in("spl_player_id", allIdsNum),
-  ]);
-
-  if (birthErr) return NextResponse.json({ error: birthErr.message }, { status: 500 });
-  if (seasonErr) return NextResponse.json({ error: seasonErr.message }, { status: 500 });
-  if (prevSeasonErr) return NextResponse.json({ error: prevSeasonErr.message }, { status: 500 });
-
-  const seasonRows = normalizeSeasonRows(seasonRawRows ?? []);
-  const prevSeasonRows = normalizeSeasonRows(prevSeasonRawRows ?? []);
-
-  const birthYearById = new Map<string, number | null>();
-  for (const r of playerBirthRows ?? []) {
-    birthYearById.set(String((r as any).spl_player_id), (r as any).birth_year ?? null);
-  }
-
-  const allRowsByPlayer = new Map<string, NormalizedSeasonRow[]>();
-  for (const r of seasonRows) {
-    const id = String(r.spl_player_id);
-    const arr = allRowsByPlayer.get(id) ?? [];
-    arr.push(r);
-    allRowsByPlayer.set(id, arr);
-  }
-
-  const allPrevRowsByPlayer = new Map<string, NormalizedSeasonRow[]>();
-  for (const r of prevSeasonRows) {
-    const id = String(r.spl_player_id);
-    const arr = allPrevRowsByPlayer.get(id) ?? [];
-    arr.push(r);
-    allPrevRowsByPlayer.set(id, arr);
-  }
-
-  const homeTeamId = teams.home.spl_team_id;
-  const awayTeamId = teams.away.spl_team_id;
-
-  const teamNameById = new Map<string, string>();
-  const teamIdsToLoad = Array.from(new Set([homeTeamId, awayTeamId].filter(Boolean))) as string[];
-
-  if (teamIdsToLoad.length) {
-    const { data: teamRows, error: teamErr } = await supabaseAdmin
-      .from("teams")
-      .select("spl_team_id, team_name, club_name")
-      .or(
-        [
-          `spl_team_id.in.(${teamIdsToLoad.join(",")})`,
-        ].join(","),
-      );
-
-    if (teamErr) return NextResponse.json({ error: teamErr.message }, { status: 500 });
-
-    for (const t of teamRows ?? []) {
-      const teamId = (t as any).spl_team_id != null ? String((t as any).spl_team_id) : null;
-      const nm = (t as any).team_name ?? (t as any).club_name ?? null;
-      if (!nm) continue;
-      if (teamId) teamNameById.set(teamId, String(nm));
+    const inputUrl = searchParams.get("url");
+    if (!inputUrl) {
+      return NextResponse.json({ error: "Missing params", expected: "url" }, { status: 400 });
     }
-  }
 
-  const homeTeamSeasonRows = seasonRows.filter((r) => String(r.spl_team_id ?? "") === String(homeTeamId ?? ""));
-  const awayTeamSeasonRows = seasonRows.filter((r) => String(r.spl_team_id ?? "") === String(awayTeamId ?? ""));
+    const seasonYear = parseSeasonYear(searchParams.get("season")) ?? new Date().getUTCFullYear();
+    const prevSeasonYear = seasonYear - 1;
 
-  const homeCategoryKey = matchCategoryKey || chooseDominantCategory(homeTeamSeasonRows);
-  const awayCategoryKey = matchCategoryKey || chooseDominantCategory(awayTeamSeasonRows);
+    const origin = new URL(req.url).origin;
+    const lineupRes = await fetch(
+      `${origin}/api/lineups-from-report?` + new URLSearchParams({ url: inputUrl }).toString(),
+      { cache: "no-store" },
+    );
 
-  const resolvedTeams = {
-    home: {
-      spl_team_id: homeTeamId,
-      team_name: teams.home?.team_name ?? bestSideTeamName(homeTeamSeasonRows, homeCategoryKey) ?? null,
-    },
-    away: {
-      spl_team_id: awayTeamId,
-      team_name: teams.away?.team_name ?? bestSideTeamName(awayTeamSeasonRows, awayCategoryKey) ?? null,
-    },
-  };
+    const lineupText = await lineupRes.text();
 
-  const [{ data: curTeamRows, error: curTeamErr }, { data: prevTeamRows, error: prevTeamErr }] =
-    await Promise.all([
-      teamIdsToLoad.length
-        ? supabaseAdmin
-            .from("computed_league_table")
-            .select(`
-              season_year,
-              spl_competition_id,
-              group_id,
-              group_name,
-              competition_name,
-              competition_category,
-              competition_tier,
-              team_spl_id,
-              played,
-              points,
-              position,
-              wins,
-              draws,
-              losses,
-              goals_for,
-              goals_against,
-              goal_diff,
-              team_name,
-              club_name
-            `)
-            .eq("season_year", seasonYear)
-            .in("team_spl_id", teamIdsToLoad)
-        : Promise.resolve({ data: [], error: null }),
-      teamIdsToLoad.length
-        ? supabaseAdmin
-            .from("computed_league_table")
-            .select(`
-              season_year,
-              spl_competition_id,
-              group_id,
-              group_name,
-              competition_name,
-              competition_category,
-              competition_tier,
-              team_spl_id,
-              played,
-              points,
-              position,
-              wins,
-              draws,
-              losses,
-              goals_for,
-              goals_against,
-              goal_diff,
-              team_name,
-              club_name
-            `)
-            .eq("season_year", prevSeasonYear)
-            .in("team_spl_id", teamIdsToLoad)
-        : Promise.resolve({ data: [], error: null }),
+    let lineupJson: any = null;
+    try {
+      lineupJson = lineupText ? JSON.parse(lineupText) : null;
+    } catch {
+      return NextResponse.json(
+        {
+          error: `lineups-from-report returned non-JSON (${lineupRes.status})`,
+          body: lineupText.slice(0, 500),
+        },
+        { status: 500 },
+      );
+    }
+
+    if (!lineupRes.ok || lineupJson?.error) {
+      return NextResponse.json(
+        { error: lineupJson?.error ?? `Failed to parse lineups (${lineupRes.status})` },
+        { status: 400 },
+      );
+    }
+
+    const teams: TeamsBlock = lineupJson.teams ?? {
+      home: { spl_team_id: null, team_name: null },
+      away: { spl_team_id: null, team_name: null },
+    };
+
+    const matchGender = lineupJson.match?.competition?.gender ?? null;
+    const matchCategoryName = lineupJson.match?.competition?.category_name ?? null;
+    const matchCategoryKey = normalizeCategoryKey(matchCategoryName);
+
+    const homePlayers = uniqById([...lineupJson.home.starters, ...lineupJson.home.bench]);
+    const awayPlayers = uniqById([...lineupJson.away.starters, ...lineupJson.away.bench]);
+    const allIds = uniqById([...homePlayers, ...awayPlayers]).map((p) => p.spl_player_id);
+    const allIdsNum = allIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+
+    if (allIds.length === 0) {
+      return NextResponse.json({ error: "No players parsed from lineups" }, { status: 200 });
+    }
+
+    const [
+      { data: playerBirthRows, error: birthErr },
+      { data: seasonRawRows, error: seasonErr },
+      { data: prevSeasonRawRows, error: prevSeasonErr },
+    ] = await Promise.all([
+      supabaseAdmin.from("players").select("spl_player_id, birth_year").in("spl_player_id", allIdsNum),
+      supabaseAdmin
+        .from("player_season_stats")
+        .select(`
+          season_year,
+          spl_team_id,
+          spl_player_id,
+          player_name,
+          team_name,
+          club_name,
+          category_name,
+          gender,
+          tier,
+          appearances,
+          starts,
+          total_minutes,
+          goals,
+          yellow_cards,
+          red_cards
+        `)
+        .eq("season_year", seasonYear)
+        .in("spl_player_id", allIdsNum),
+      supabaseAdmin
+        .from("player_season_stats")
+        .select(`
+          season_year,
+          spl_team_id,
+          spl_player_id,
+          player_name,
+          team_name,
+          club_name,
+          category_name,
+          gender,
+          tier,
+          appearances,
+          starts,
+          total_minutes,
+          goals,
+          yellow_cards,
+          red_cards
+        `)
+        .eq("season_year", prevSeasonYear)
+        .in("spl_player_id", allIdsNum),
     ]);
 
-  if (curTeamErr) return NextResponse.json({ error: curTeamErr.message }, { status: 500 });
-  if (prevTeamErr) return NextResponse.json({ error: prevTeamErr.message }, { status: 500 });
+    if (birthErr) return NextResponse.json({ error: birthErr.message }, { status: 500 });
+    if (seasonErr) return NextResponse.json({ error: seasonErr.message }, { status: 500 });
+    if (prevSeasonErr) return NextResponse.json({ error: prevSeasonErr.message }, { status: 500 });
 
-  const currentTableRows = (curTeamRows ?? []) as unknown as TeamTableRow[];
-  const previousTableRows = (prevTeamRows ?? []) as unknown as TeamTableRow[];
+    const seasonRows = normalizeSeasonRows(seasonRawRows ?? []);
+    const prevSeasonRows = normalizeSeasonRows(prevSeasonRawRows ?? []);
 
-  const currentByTeam = new Map<string, TeamTableRow[]>();
-  for (const r of currentTableRows) {
-    const id = String((r as any).team_spl_id ?? "");
-    if (!id) continue;
-    const arr = currentByTeam.get(id) ?? [];
-    arr.push(r);
-    currentByTeam.set(id, arr);
-  }
-
-  const previousByTeam = new Map<string, TeamTableRow[]>();
-  for (const r of previousTableRows) {
-    const id = String((r as any).team_spl_id ?? "");
-    if (!id) continue;
-    const arr = previousByTeam.get(id) ?? [];
-    arr.push(r);
-    previousByTeam.set(id, arr);
-  }
-
-  const homeCurrentTable = chooseBestTeamTableRow(
-    currentByTeam.get(String(homeTeamId ?? "")) ?? [],
-    homeCategoryKey,
-    teams.home?.team_name ?? null,
-  );
-
-  const awayCurrentTable = chooseBestTeamTableRow(
-    currentByTeam.get(String(awayTeamId ?? "")) ?? [],
-    awayCategoryKey,
-    teams.away?.team_name ?? null,
-  );
-
-  console.log("homeTeamId", homeTeamId);
-  console.log("awayTeamId", awayTeamId);
-  console.log("teamIdsToLoad", teamIdsToLoad);
-  console.log("current rows found", currentTableRows.length);
-  console.log("previous rows found", previousTableRows.length);
-  console.log("home rows", currentByTeam.get(String(homeTeamId ?? "")));
-  console.log("away rows", currentByTeam.get(String(awayTeamId ?? "")));
-  console.log("homeCurrentTable", homeCurrentTable);
-  console.log("awayCurrentTable", awayCurrentTable);
-
-  const homePrevTable = chooseBestTeamTableRow(
-    previousByTeam.get(String(homeTeamId ?? "")) ?? [],
-    homeCategoryKey,
-    teams.home?.team_name ?? null,
-  );
-
-  const awayPrevTable = chooseBestTeamTableRow(
-    previousByTeam.get(String(awayTeamId ?? "")) ?? [],
-    awayCategoryKey,
-    teams.away?.team_name ?? null,
-  );
-
-  const homeCompName = homeCurrentTable?.competition_name ?? homePrevTable?.competition_name ?? null;
-  const awayCompName = awayCurrentTable?.competition_name ?? awayPrevTable?.competition_name ?? null;
-
-  const homeCurrentStrengthBits = strengthFromTableRow(homeCurrentTable);
-  const awayCurrentStrengthBits = strengthFromTableRow(awayCurrentTable);
-  const homePrevStrengthBits = strengthFromTableRow(homePrevTable);
-  const awayPrevStrengthBits = strengthFromTableRow(awayPrevTable);
-
-  const homeTier = homeCurrentStrengthBits.tier ?? homePrevStrengthBits.tier ?? null;
-  const awayTier = awayCurrentStrengthBits.tier ?? awayPrevStrengthBits.tier ?? null;
-
-  const isWomen =
-    String(matchGender ?? "").toLowerCase() === "female" ||
-    isWomenName(homeCompName) ||
-    isWomenName(awayCompName);
-
-  const homeStrength = blendStrength(
-    homeCurrentStrengthBits.strength,
-    homePrevStrengthBits.strength,
-    homeCurrentStrengthBits.played,
-    homeTier,
-  );
-
-  const awayStrength = blendStrength(
-    awayCurrentStrengthBits.strength,
-    awayPrevStrengthBits.strength,
-    awayCurrentStrengthBits.played,
-    awayTier,
-  );
-
-  const teamStrengthDebug = {
-    home: homeTeamId
-      ? {
-          team_spl_id: String(homeTeamId),
-          competition_tier: homeTier,
-          competition_name: homeCompName,
-          position: homeCurrentStrengthBits.position,
-          played: homeCurrentStrengthBits.played,
-          points: homeCurrentStrengthBits.points,
-          ppm: homeCurrentStrengthBits.ppm,
-          base: homeCurrentStrengthBits.base,
-          scale: homeCurrentStrengthBits.scale,
-          strength: homeStrength,
-          prev: homePrevTable
-            ? {
-                season_year: prevSeasonYear,
-                competition_tier: homePrevStrengthBits.tier,
-                competition_name: homePrevTable.competition_category ?? homePrevTable.competition_name,
-                position: homePrevStrengthBits.position,
-                played: homePrevStrengthBits.played,
-                points: homePrevStrengthBits.points,
-              }
-            : null,
-        }
-      : null,
-    away: awayTeamId
-      ? {
-          team_spl_id: String(awayTeamId),
-          competition_tier: awayTier,
-          competition_name: awayCompName,
-          position: awayCurrentStrengthBits.position,
-          played: awayCurrentStrengthBits.played,
-          points: awayCurrentStrengthBits.points,
-          ppm: awayCurrentStrengthBits.ppm,
-          base: awayCurrentStrengthBits.base,
-          scale: awayCurrentStrengthBits.scale,
-          strength: awayStrength,
-          prev: awayPrevTable
-            ? {
-                season_year: prevSeasonYear,
-                competition_tier: awayPrevStrengthBits.tier,
-                competition_name: awayPrevTable.competition_category ?? awayPrevTable.competition_name,
-                position: awayPrevStrengthBits.position,
-                played: awayPrevStrengthBits.played,
-                points: awayPrevStrengthBits.points,
-              }
-            : null,
-        }
-      : null,
-  };
-
-  const { data: lineupRows, error: lineupErr } = await supabaseAdmin
-    .from("match_lineups")
-    .select("spl_player_id, spl_match_id, minute_in, minute_out, spl_team_id")
-    .in("spl_player_id", allIdsNum);
-
-  if (lineupErr) return NextResponse.json({ error: lineupErr.message }, { status: 500 });
-
-  const matchIds = Array.from(new Set((lineupRows ?? []).map((r: any) => String(r.spl_match_id)).filter(Boolean)));
-  const kickoffMap = new Map<string, number>();
-
-  if (matchIds.length) {
-    const { data: matchRows, error: matchErr } = await supabaseAdmin
-      .from("matches")
-      .select("spl_match_id, kickoff_at")
-      .in("spl_match_id", matchIds);
-
-    if (matchErr) return NextResponse.json({ error: matchErr.message }, { status: 500 });
-
-    for (const m of matchRows ?? []) {
-      const k = String((m as any).spl_match_id);
-      const t = (m as any).kickoff_at ? Date.parse((m as any).kickoff_at) : 0;
-      kickoffMap.set(k, Number.isFinite(t) ? t : 0);
-    }
-  }
-
-  const byPlayer = new Map<string, Array<any>>();
-  for (const r of lineupRows ?? []) {
-    const pid = String((r as any).spl_player_id);
-    const mid = String((r as any).spl_match_id);
-    const kickoff = kickoffMap.get(mid) ?? 0;
-    const started = (r as any).minute_in === null || (r as any).minute_in === 0;
-    const mins = minutesFromLineupRow({
-      minute_in: (r as any).minute_in,
-      minute_out: (r as any).minute_out,
-    });
-
-    const arr = byPlayer.get(pid) ?? [];
-    arr.push({ spl_match_id: mid, kickoff, started, minutes: mins });
-    byPlayer.set(pid, arr);
-  }
-
-  function lastN(pid: string, n: number) {
-    const arr = (byPlayer.get(pid) ?? []).slice().sort((a, b) => (b.kickoff ?? 0) - (a.kickoff ?? 0));
-    const take = arr.slice(0, n);
-    return {
-      lastNApps: take.length,
-      lastNMinutes: take.reduce((s, x) => s + (x.minutes ?? 0), 0),
-      lastNStarts: take.reduce((s, x) => s + (x.started ? 1 : 0), 0),
-    };
-  }
-
-  function enrich(p: LineupPlayer, side: "home" | "away") {
-    const sideTeamId = side === "home" ? homeTeamId : awayTeamId;
-    const sideCategoryKey = side === "home" ? homeCategoryKey : awayCategoryKey;
-
-    const playerRows = allRowsByPlayer.get(String(p.spl_player_id)) ?? [];
-    const prevPlayerRows = allPrevRowsByPlayer.get(String(p.spl_player_id)) ?? [];
-
-    const chosenRows = pickPreferredRows(playerRows, sideTeamId, sideCategoryKey, matchGender);
-    const prevChosenRows = pickPreferredRows(prevPlayerRows, sideTeamId, sideCategoryKey, matchGender);
-
-    const currResult = chosenRows.length > 0 ? calcWeightedImportance(chosenRows, seasonYear) : null;
-    const prevResult = prevChosenRows.length > 0 ? calcWeightedImportance(prevChosenRows, prevSeasonYear) : null;
-
-    let importance = 0;
-    let importanceCeiling = currResult?.ceiling ?? prevResult?.ceiling ?? 100;
-
-    if (currResult !== null && prevResult !== null) {
-      const currMins = chosenRows.reduce((sum, r) => sum + Number(r.minutes ?? 0), 0);
-      const prevWeight = Math.max(0, 1 - currMins / 500) * 0.3;
-      importance = Math.round(currResult.importance * (1 - prevWeight) + prevResult.importance * prevWeight);
-    } else if (currResult !== null) {
-      importance = currResult.importance;
-    } else if (prevResult !== null) {
-      importance = prevResult.importance;
-      importanceCeiling = prevResult.ceiling;
+    const birthYearById = new Map<string, number | null>();
+    for (const r of playerBirthRows ?? []) {
+      birthYearById.set(String((r as any).spl_player_id), (r as any).birth_year ?? null);
     }
 
-    const sideTierRaw = side === "home" ? homeTier : awayTier;
-    const sideTier = Number.isFinite(Number(sideTierRaw)) ? Number(sideTierRaw) : 99;
+    const allRowsByPlayer = new Map<string, NormalizedSeasonRow[]>();
+    for (const r of seasonRows) {
+      const id = String(r.spl_player_id);
+      const arr = allRowsByPlayer.get(id) ?? [];
+      arr.push(r);
+      allRowsByPlayer.set(id, arr);
+    }
 
-    if (sideTier < 99) {
-      const sideCeiling = isWomen
-        ? sideTier <= 1
-          ? 92
-          : sideTier <= 2
-            ? 78
-            : 22
-        : sideTier <= 1
-          ? 92
-          : sideTier === 2
-            ? 78
-            : sideTier === 3
-              ? 64
-              : sideTier === 4
-                ? 50
-                : sideTier === 5
-                  ? 36
-                  : 28;
+    const allPrevRowsByPlayer = new Map<string, NormalizedSeasonRow[]>();
+    for (const r of prevSeasonRows) {
+      const id = String(r.spl_player_id);
+      const arr = allPrevRowsByPlayer.get(id) ?? [];
+      arr.push(r);
+      allPrevRowsByPlayer.set(id, arr);
+    }
 
-      const playerHighestTier = [...chosenRows].reduce((best: number, r) => {
-        const fallbackTier = fallbackTierFromCategory(r.competition_category);
-        const t =
-          Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
-            ? Number(r.competition_tier)
-            : (fallbackTier ?? 99);
-        return Number(r.minutes ?? 0) >= 180 && t < best ? t : best;
-      }, 99);
+    const homeTeamId = teams.home.spl_team_id;
+    const awayTeamId = teams.away.spl_team_id;
 
-      const effectiveCeiling = playerHighestTier < sideTier ? importanceCeiling : sideCeiling;
-      if (effectiveCeiling < importanceCeiling) {
-        importanceCeiling = effectiveCeiling;
-        const hasTeamStats =
-          sideTeamId != null
-            ? chosenRows.some((r) => String(r.spl_team_id ?? "") === String(sideTeamId) && Number(r.minutes ?? 0) > 0)
-            : false;
+    const teamNameById = new Map<string, string>();
+    const teamIdsToLoad = Array.from(new Set([homeTeamId, awayTeamId].filter(Boolean))) as string[];
 
-        importance = !hasTeamStats && importance < Math.round(effectiveCeiling * 0.35)
-          ? Math.round(effectiveCeiling * 0.35)
-          : Math.min(importance, effectiveCeiling);
+    if (teamIdsToLoad.length) {
+      const { data: teamRows, error: teamErr } = await supabaseAdmin
+        .from("teams")
+        .select("spl_team_id, team_name, club_name")
+        .in("spl_team_id", teamIdsToLoad);
+
+      if (teamErr) return NextResponse.json({ error: teamErr.message }, { status: 500 });
+
+      for (const t of teamRows ?? []) {
+        const teamId = (t as any).spl_team_id != null ? String((t as any).spl_team_id) : null;
+        const nm = (t as any).team_name ?? (t as any).club_name ?? null;
+        if (!nm) continue;
+        if (teamId) teamNameById.set(teamId, String(nm));
       }
     }
 
-    const seasons = chosenRows.slice(0, 3).map((sr) => {
-      const sTeamId = sr.spl_team_id ? String(sr.spl_team_id) : null;
-      return {
-        season_year: seasonYear,
-        spl_team_id: sTeamId,
-        team_name: sr.team_name ?? (sTeamId ? teamNameById.get(sTeamId) ?? null : null),
-        player_name: sr.player_name ?? p.name,
-        matches_played: Number(sr.matches_played ?? 0),
-        starts: Number(sr.starts ?? 0),
-        minutes: Number(sr.minutes ?? 0),
-        goals: Number(sr.goals ?? 0),
-        yellows: Number(sr.yellows ?? 0),
-        reds: Number(sr.reds ?? 0),
-        club_ctx: {
-          competition_tier: sr.competition_tier,
-          competition_category: sr.competition_category,
-        },
-      };
-    });
+    const homeTeamSeasonRows = seasonRows.filter((r) => String(r.spl_team_id ?? "") === String(homeTeamId ?? ""));
+    const awayTeamSeasonRows = seasonRows.filter((r) => String(r.spl_team_id ?? "") === String(awayTeamId ?? ""));
 
-    const prevSeasons = prevChosenRows.slice(0, 3).map((pr) => {
-      const prevTeamId = pr.spl_team_id ? String(pr.spl_team_id) : null;
-      return {
-        season_year: prevSeasonYear,
-        spl_team_id: prevTeamId,
-        team_name: pr.team_name ?? (prevTeamId ? teamNameById.get(prevTeamId) ?? null : null),
-        player_name: pr.player_name ?? p.name,
-        matches_played: Number(pr.matches_played ?? 0),
-        starts: Number(pr.starts ?? 0),
-        minutes: Number(pr.minutes ?? 0),
-        goals: Number(pr.goals ?? 0),
-        yellows: Number(pr.yellows ?? 0),
-        reds: Number(pr.reds ?? 0),
-        club_ctx: {
-          competition_tier: pr.competition_tier,
-          competition_category: pr.competition_category,
-        },
-      };
-    });
+    const homeCategoryKey = matchCategoryKey || chooseDominantCategory(homeTeamSeasonRows);
+    const awayCategoryKey = matchCategoryKey || chooseDominantCategory(awayTeamSeasonRows);
 
-    return {
-      ...p,
-      birth_year: birthYearById.get(String(p.spl_player_id)) ?? null,
-      season: seasons[0] ?? null,
-      seasons,
-      prevSeasons,
-      recent5: lastN(String(p.spl_player_id), 5),
-      importance,
-      importanceCeiling,
+    const resolvedTeams = {
+      home: {
+        spl_team_id: homeTeamId,
+        team_name: teams.home?.team_name ?? bestSideTeamName(homeTeamSeasonRows, homeCategoryKey) ?? null,
+      },
+      away: {
+        spl_team_id: awayTeamId,
+        team_name: teams.away?.team_name ?? bestSideTeamName(awayTeamSeasonRows, awayCategoryKey) ?? null,
+      },
     };
-  }
 
-  const home = {
-    starters: lineupJson.home.starters.map((p) => enrich(p, "home")),
-    bench: lineupJson.home.bench.map((p) => enrich(p, "home")),
-  };
-
-  const away = {
-    starters: lineupJson.away.starters.map((p) => enrich(p, "away")),
-    bench: lineupJson.away.bench.map((p) => enrich(p, "away")),
-  };
-
-  async function buildMissingLikelyXI(side: "home" | "away") {
-    const teamId = side === "home" ? homeTeamId : awayTeamId;
-    if (!teamId) return { missing: [], missingImpact: 0 };
-
-    const likely = await getLikelyXI(teamId, seasonYear, matchGender);
-    const starterIds = new Set((side === "home" ? home.starters : away.starters).map((p) => String(p.spl_player_id)));
-    const benchIds = new Set((side === "home" ? home.bench : away.bench).map((p) => String(p.spl_player_id)));
-    const presentIds = new Set([...starterIds, ...benchIds]);
-
-    const missingIds = likely.map((p) => String(p.spl_player_id)).filter((id) => !presentIds.has(id));
-    const missingIdsNum = missingIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
-    if (missingIds.length === 0) return { missing: [], missingImpact: 0 };
-
-    const [{ data: missRawRows, error: missErr }, { data: missPrevRawRows, error: missPrevErr }] =
+    const [{ data: curTeamRows, error: curTeamErr }, { data: prevTeamRows, error: prevTeamErr }] =
       await Promise.all([
-        supabaseAdmin
-          .from("player_season_stats")
-          .select(`
-            season_year,
-            spl_team_id,
-            spl_player_id,
-            player_name,
-            team_name,
-            club_name,
-            category_name,
-            gender,
-            tier,
-            appearances,
-            starts,
-            total_minutes,
-            goals,
-            yellow_cards,
-            red_cards
-          `)
-          .eq("season_year", seasonYear)
-          .in("spl_player_id", missingIdsNum),
-        supabaseAdmin
-          .from("player_season_stats")
-          .select(`
-            season_year,
-            spl_team_id,
-            spl_player_id,
-            player_name,
-            team_name,
-            club_name,
-            category_name,
-            gender,
-            tier,
-            appearances,
-            starts,
-            total_minutes,
-            goals,
-            yellow_cards,
-            red_cards
-          `)
-          .eq("season_year", prevSeasonYear)
-          .eq("spl_team_id", teamId)
-          .in("spl_player_id", missingIdsNum),
+        teamIdsToLoad.length
+          ? supabaseAdmin
+              .from("computed_league_table")
+              .select(`
+                season_year,
+                spl_competition_id,
+                group_id,
+                group_name,
+                competition_name,
+                competition_category,
+                competition_tier,
+                team_spl_id,
+                played,
+                points,
+                position,
+                wins,
+                draws,
+                losses,
+                goals_for,
+                goals_against,
+                goal_diff,
+                team_name,
+                club_name
+              `)
+              .eq("season_year", seasonYear)
+              .in("team_spl_id", teamIdsToLoad)
+          : Promise.resolve({ data: [], error: null }),
+        teamIdsToLoad.length
+          ? supabaseAdmin
+              .from("computed_league_table")
+              .select(`
+                season_year,
+                spl_competition_id,
+                group_id,
+                group_name,
+                competition_name,
+                competition_category,
+                competition_tier,
+                team_spl_id,
+                played,
+                points,
+                position,
+                wins,
+                draws,
+                losses,
+                goals_for,
+                goals_against,
+                goal_diff,
+                team_name,
+                club_name
+              `)
+              .eq("season_year", prevSeasonYear)
+              .in("team_spl_id", teamIdsToLoad)
+          : Promise.resolve({ data: [], error: null }),
       ]);
 
-    if (missErr) throw new Error(missErr.message);
-    if (missPrevErr) throw new Error(missPrevErr.message);
+    if (curTeamErr) return NextResponse.json({ error: curTeamErr.message }, { status: 500 });
+    if (prevTeamErr) return NextResponse.json({ error: prevTeamErr.message }, { status: 500 });
 
-    const missRows = normalizeSeasonRows(missRawRows ?? []);
-    const missPrevRows = normalizeSeasonRows(missPrevRawRows ?? []);
+    const currentTableRows = (curTeamRows ?? []) as unknown as TeamTableRow[];
+    const previousTableRows = (prevTeamRows ?? []) as unknown as TeamTableRow[];
 
-    const missingRowsByPlayer = new Map<string, { rows: NormalizedSeasonRow[]; seasonCtx: number }>();
-    for (const r of missRows) {
-      const pid = String(r.spl_player_id);
-      const entry = missingRowsByPlayer.get(pid) ?? { rows: [], seasonCtx: seasonYear };
-      entry.rows.push(r);
-      missingRowsByPlayer.set(pid, entry);
+    const currentByTeam = new Map<string, TeamTableRow[]>();
+    for (const r of currentTableRows) {
+      const id = String((r as any).team_spl_id ?? "");
+      if (!id) continue;
+      const arr = currentByTeam.get(id) ?? [];
+      arr.push(r);
+      currentByTeam.set(id, arr);
     }
-    for (const r of missPrevRows) {
-      const pid = String(r.spl_player_id);
-      if (!missingRowsByPlayer.has(pid)) {
-        missingRowsByPlayer.set(pid, { rows: [r], seasonCtx: prevSeasonYear });
+
+    const previousByTeam = new Map<string, TeamTableRow[]>();
+    for (const r of previousTableRows) {
+      const id = String((r as any).team_spl_id ?? "");
+      if (!id) continue;
+      const arr = previousByTeam.get(id) ?? [];
+      arr.push(r);
+      previousByTeam.set(id, arr);
+    }
+
+    const homeCurrentTable = chooseBestTeamTableRow(
+      currentByTeam.get(String(homeTeamId ?? "")) ?? [],
+      homeCategoryKey,
+      teams.home?.team_name ?? null,
+    );
+
+    const awayCurrentTable = chooseBestTeamTableRow(
+      currentByTeam.get(String(awayTeamId ?? "")) ?? [],
+      awayCategoryKey,
+      teams.away?.team_name ?? null,
+    );
+
+    console.log("homeTeamId", homeTeamId);
+    console.log("awayTeamId", awayTeamId);
+    console.log("teamIdsToLoad", teamIdsToLoad);
+    console.log("current rows found", currentTableRows.length);
+    console.log("previous rows found", previousTableRows.length);
+    console.log("home rows", currentByTeam.get(String(homeTeamId ?? "")));
+    console.log("away rows", currentByTeam.get(String(awayTeamId ?? "")));
+    console.log("homeCurrentTable", homeCurrentTable);
+    console.log("awayCurrentTable", awayCurrentTable);
+
+    const homePrevTable = chooseBestTeamTableRow(
+      previousByTeam.get(String(homeTeamId ?? "")) ?? [],
+      homeCategoryKey,
+      teams.home?.team_name ?? null,
+    );
+
+    const awayPrevTable = chooseBestTeamTableRow(
+      previousByTeam.get(String(awayTeamId ?? "")) ?? [],
+      awayCategoryKey,
+      teams.away?.team_name ?? null,
+    );
+
+    const homeCompName = homeCurrentTable?.competition_name ?? homePrevTable?.competition_name ?? null;
+    const awayCompName = awayCurrentTable?.competition_name ?? awayPrevTable?.competition_name ?? null;
+
+    const homeCurrentStrengthBits = strengthFromTableRow(homeCurrentTable);
+    const awayCurrentStrengthBits = strengthFromTableRow(awayCurrentTable);
+    const homePrevStrengthBits = strengthFromTableRow(homePrevTable);
+    const awayPrevStrengthBits = strengthFromTableRow(awayPrevTable);
+
+    const homeTier = homeCurrentStrengthBits.tier ?? homePrevStrengthBits.tier ?? null;
+    const awayTier = awayCurrentStrengthBits.tier ?? awayPrevStrengthBits.tier ?? null;
+
+    const isWomen =
+      String(matchGender ?? "").toLowerCase() === "female" ||
+      isWomenName(homeCompName) ||
+      isWomenName(awayCompName);
+
+    const homeStrength = blendStrength(
+      homeCurrentStrengthBits.strength,
+      homePrevStrengthBits.strength,
+      homeCurrentStrengthBits.played,
+      homeTier,
+    );
+
+    const awayStrength = blendStrength(
+      awayCurrentStrengthBits.strength,
+      awayPrevStrengthBits.strength,
+      awayCurrentStrengthBits.played,
+      awayTier,
+    );
+
+    const teamStrengthDebug = {
+      home: homeTeamId
+        ? {
+            team_spl_id: String(homeTeamId),
+            competition_tier: homeTier,
+            competition_name: homeCompName,
+            position: homeCurrentStrengthBits.position,
+            played: homeCurrentStrengthBits.played,
+            points: homeCurrentStrengthBits.points,
+            ppm: homeCurrentStrengthBits.ppm,
+            base: homeCurrentStrengthBits.base,
+            scale: homeCurrentStrengthBits.scale,
+            strength: homeStrength,
+            prev: homePrevTable
+              ? {
+                  season_year: prevSeasonYear,
+                  competition_tier: homePrevStrengthBits.tier,
+                  competition_name: homePrevTable.competition_category ?? homePrevTable.competition_name,
+                  position: homePrevStrengthBits.position,
+                  played: homePrevStrengthBits.played,
+                  points: homePrevStrengthBits.points,
+                }
+              : null,
+          }
+        : null,
+      away: awayTeamId
+        ? {
+            team_spl_id: String(awayTeamId),
+            competition_tier: awayTier,
+            competition_name: awayCompName,
+            position: awayCurrentStrengthBits.position,
+            played: awayCurrentStrengthBits.played,
+            points: awayCurrentStrengthBits.points,
+            ppm: awayCurrentStrengthBits.ppm,
+            base: awayCurrentStrengthBits.base,
+            scale: awayCurrentStrengthBits.scale,
+            strength: awayStrength,
+            prev: awayPrevTable
+              ? {
+                  season_year: prevSeasonYear,
+                  competition_tier: awayPrevStrengthBits.tier,
+                  competition_name: awayPrevTable.competition_category ?? awayPrevTable.competition_name,
+                  position: awayPrevStrengthBits.position,
+                  played: awayPrevStrengthBits.played,
+                  points: awayPrevStrengthBits.points,
+                }
+              : null,
+          }
+        : null,
+    };
+
+    const { data: lineupRows, error: lineupErr } = await supabaseAdmin
+      .from("match_lineups")
+      .select("spl_player_id, spl_match_id, minute_in, minute_out, spl_team_id")
+      .in("spl_player_id", allIdsNum);
+
+    if (lineupErr) return NextResponse.json({ error: lineupErr.message }, { status: 500 });
+
+    const matchIds = Array.from(new Set((lineupRows ?? []).map((r: any) => String(r.spl_match_id)).filter(Boolean)));
+    const kickoffMap = new Map<string, number>();
+
+    if (matchIds.length) {
+      const { data: matchRows, error: matchErr } = await supabaseAdmin
+        .from("matches")
+        .select("spl_match_id, kickoff_at")
+        .in("spl_match_id", matchIds);
+
+      if (matchErr) return NextResponse.json({ error: matchErr.message }, { status: 500 });
+
+      for (const m of matchRows ?? []) {
+        const k = String((m as any).spl_match_id);
+        const t = (m as any).kickoff_at ? Date.parse((m as any).kickoff_at) : 0;
+        kickoffMap.set(k, Number.isFinite(t) ? t : 0);
       }
     }
 
-    const sideTierRaw = side === "home" ? homeTier : awayTier;
-    const sideTier = Number.isFinite(Number(sideTierRaw)) ? Number(sideTierRaw) : 99;
-    const sideCeiling =
-      sideTier < 99
-        ? isWomen
+    const byPlayer = new Map<string, Array<any>>();
+    for (const r of lineupRows ?? []) {
+      const pid = String((r as any).spl_player_id);
+      const mid = String((r as any).spl_match_id);
+      const kickoff = kickoffMap.get(mid) ?? 0;
+      const started = (r as any).minute_in === null || (r as any).minute_in === 0;
+      const mins = minutesFromLineupRow({
+        minute_in: (r as any).minute_in,
+        minute_out: (r as any).minute_out,
+      });
+
+      const arr = byPlayer.get(pid) ?? [];
+      arr.push({ spl_match_id: mid, kickoff, started, minutes: mins });
+      byPlayer.set(pid, arr);
+    }
+
+    function lastN(pid: string, n: number) {
+      const arr = (byPlayer.get(pid) ?? []).slice().sort((a, b) => (b.kickoff ?? 0) - (a.kickoff ?? 0));
+      const take = arr.slice(0, n);
+      return {
+        lastNApps: take.length,
+        lastNMinutes: take.reduce((s, x) => s + (x.minutes ?? 0), 0),
+        lastNStarts: take.reduce((s, x) => s + (x.started ? 1 : 0), 0),
+      };
+    }
+
+    function enrich(p: LineupPlayer, side: "home" | "away") {
+      const sideTeamId = side === "home" ? homeTeamId : awayTeamId;
+      const sideCategoryKey = side === "home" ? homeCategoryKey : awayCategoryKey;
+
+      const playerRows = allRowsByPlayer.get(String(p.spl_player_id)) ?? [];
+      const prevPlayerRows = allPrevRowsByPlayer.get(String(p.spl_player_id)) ?? [];
+
+      const chosenRows = pickPreferredRows(playerRows, sideTeamId, sideCategoryKey, matchGender);
+      const prevChosenRows = pickPreferredRows(prevPlayerRows, sideTeamId, sideCategoryKey, matchGender);
+
+      const currResult = chosenRows.length > 0 ? calcWeightedImportance(chosenRows, seasonYear) : null;
+      const prevResult = prevChosenRows.length > 0 ? calcWeightedImportance(prevChosenRows, prevSeasonYear) : null;
+
+      let importance = 0;
+      let importanceCeiling = currResult?.ceiling ?? prevResult?.ceiling ?? 100;
+
+      if (currResult !== null && prevResult !== null) {
+        const currMins = chosenRows.reduce((sum, r) => sum + Number(r.minutes ?? 0), 0);
+        const prevWeight = Math.max(0, 1 - currMins / 500) * 0.3;
+        importance = Math.round(currResult.importance * (1 - prevWeight) + prevResult.importance * prevWeight);
+      } else if (currResult !== null) {
+        importance = currResult.importance;
+      } else if (prevResult !== null) {
+        importance = prevResult.importance;
+        importanceCeiling = prevResult.ceiling;
+      }
+
+      const sideTierRaw = side === "home" ? homeTier : awayTier;
+      const sideTier = Number.isFinite(Number(sideTierRaw)) ? Number(sideTierRaw) : 99;
+
+      if (sideTier < 99) {
+        const sideCeiling = isWomen
           ? sideTier <= 1
             ? 92
             : sideTier <= 2
@@ -1486,105 +1314,299 @@ export async function GET(req: Request) {
                   ? 50
                   : sideTier === 5
                     ? 36
-                    : 28
-        : 100;
+                    : 28;
 
-    const missing = Array.from(missingRowsByPlayer.entries()).map(([pid, { rows, seasonCtx }]) => {
-      const sideCategoryKey = side === "home" ? homeCategoryKey : awayCategoryKey;
-      const preferredRows = pickPreferredRows(rows, teamId, sideCategoryKey, matchGender);
-      const best = preferredRows.reduce((a, b) => (Number(a.minutes ?? 0) >= Number(b.minutes ?? 0) ? a : b));
-      const { importance: rawImp, ceiling: rawCeiling } = calcWeightedImportance(preferredRows, seasonCtx);
+        const playerHighestTier = [...chosenRows].reduce((best: number, r) => {
+          const fallbackTier = fallbackTierFromCategory(r.competition_category);
+          const t =
+            Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
+              ? Number(r.competition_tier)
+              : (fallbackTier ?? 99);
+          return Number(r.minutes ?? 0) >= 180 && t < best ? t : best;
+        }, 99);
+
+        const effectiveCeiling = playerHighestTier < sideTier ? importanceCeiling : sideCeiling;
+        if (effectiveCeiling < importanceCeiling) {
+          importanceCeiling = effectiveCeiling;
+          const hasTeamStats =
+            sideTeamId != null
+              ? chosenRows.some((r) => String(r.spl_team_id ?? "") === String(sideTeamId) && Number(r.minutes ?? 0) > 0)
+              : false;
+
+          importance = !hasTeamStats && importance < Math.round(effectiveCeiling * 0.35)
+            ? Math.round(effectiveCeiling * 0.35)
+            : Math.min(importance, effectiveCeiling);
+        }
+      }
+
+      const seasons = chosenRows.slice(0, 3).map((sr) => {
+        const sTeamId = sr.spl_team_id ? String(sr.spl_team_id) : null;
+        return {
+          season_year: seasonYear,
+          spl_team_id: sTeamId,
+          team_name: sr.team_name ?? (sTeamId ? teamNameById.get(sTeamId) ?? null : null),
+          player_name: sr.player_name ?? p.name,
+          matches_played: Number(sr.matches_played ?? 0),
+          starts: Number(sr.starts ?? 0),
+          minutes: Number(sr.minutes ?? 0),
+          goals: Number(sr.goals ?? 0),
+          yellows: Number(sr.yellows ?? 0),
+          reds: Number(sr.reds ?? 0),
+          club_ctx: {
+            competition_tier: sr.competition_tier,
+            competition_category: sr.competition_category,
+          },
+        };
+      });
+
+      const prevSeasons = prevChosenRows.slice(0, 3).map((pr) => {
+        const prevTeamId = pr.spl_team_id ? String(pr.spl_team_id) : null;
+        return {
+          season_year: prevSeasonYear,
+          spl_team_id: prevTeamId,
+          team_name: pr.team_name ?? (prevTeamId ? teamNameById.get(prevTeamId) ?? null : null),
+          player_name: pr.player_name ?? p.name,
+          matches_played: Number(pr.matches_played ?? 0),
+          starts: Number(pr.starts ?? 0),
+          minutes: Number(pr.minutes ?? 0),
+          goals: Number(pr.goals ?? 0),
+          yellows: Number(pr.yellows ?? 0),
+          reds: Number(pr.reds ?? 0),
+          club_ctx: {
+            competition_tier: pr.competition_tier,
+            competition_category: pr.competition_category,
+          },
+        };
+      });
 
       return {
-        spl_player_id: pid,
-        player_name: best.player_name ?? null,
-        birth_year: birthYearById.get(pid) ?? null,
-        starts: preferredRows.reduce((s, r) => s + Number(r.starts ?? 0), 0),
-        minutes: preferredRows.reduce((s, r) => s + Number(r.minutes ?? 0), 0),
-        goals: preferredRows.reduce((s, r) => s + Number(r.goals ?? 0), 0),
-        importance: Math.min(rawImp, sideCeiling),
-        importanceCeiling: Math.min(rawCeiling, sideCeiling),
-        fromPrevSeason: seasonCtx === prevSeasonYear,
+        ...p,
+        birth_year: birthYearById.get(String(p.spl_player_id)) ?? null,
+        season: seasons[0] ?? null,
+        seasons,
+        prevSeasons,
+        recent5: lastN(String(p.spl_player_id), 5),
+        importance,
+        importanceCeiling,
       };
+    }
+
+    const home = {
+      starters: lineupJson.home.starters.map((p) => enrich(p, "home")),
+      bench: lineupJson.home.bench.map((p) => enrich(p, "home")),
+    };
+
+    const away = {
+      starters: lineupJson.away.starters.map((p) => enrich(p, "away")),
+      bench: lineupJson.away.bench.map((p) => enrich(p, "away")),
+    };
+
+    async function buildMissingLikelyXI(side: "home" | "away") {
+      const teamId = side === "home" ? homeTeamId : awayTeamId;
+      if (!teamId) return { missing: [], missingImpact: 0 };
+
+      const likely = await getLikelyXI(teamId, seasonYear, matchGender);
+      const starterIds = new Set((side === "home" ? home.starters : away.starters).map((p) => String(p.spl_player_id)));
+      const benchIds = new Set((side === "home" ? home.bench : away.bench).map((p) => String(p.spl_player_id)));
+      const presentIds = new Set([...starterIds, ...benchIds]);
+
+      const missingIds = likely.map((p) => String(p.spl_player_id)).filter((id) => !presentIds.has(id));
+      const missingIdsNum = missingIds.map((id) => Number(id)).filter((id) => Number.isFinite(id));
+      if (missingIds.length === 0) return { missing: [], missingImpact: 0 };
+
+      const [{ data: missRawRows, error: missErr }, { data: missPrevRawRows, error: missPrevErr }] =
+        await Promise.all([
+          supabaseAdmin
+            .from("player_season_stats")
+            .select(`
+              season_year,
+              spl_team_id,
+              spl_player_id,
+              player_name,
+              team_name,
+              club_name,
+              category_name,
+              gender,
+              tier,
+              appearances,
+              starts,
+              total_minutes,
+              goals,
+              yellow_cards,
+              red_cards
+            `)
+            .eq("season_year", seasonYear)
+            .in("spl_player_id", missingIdsNum),
+          supabaseAdmin
+            .from("player_season_stats")
+            .select(`
+              season_year,
+              spl_team_id,
+              spl_player_id,
+              player_name,
+              team_name,
+              club_name,
+              category_name,
+              gender,
+              tier,
+              appearances,
+              starts,
+              total_minutes,
+              goals,
+              yellow_cards,
+              red_cards
+            `)
+            .eq("season_year", prevSeasonYear)
+            .eq("spl_team_id", teamId)
+            .in("spl_player_id", missingIdsNum),
+        ]);
+
+      if (missErr) throw new Error(missErr.message);
+      if (missPrevErr) throw new Error(missPrevErr.message);
+
+      const missRows = normalizeSeasonRows(missRawRows ?? []);
+      const missPrevRows = normalizeSeasonRows(missPrevRawRows ?? []);
+
+      const missingRowsByPlayer = new Map<string, { rows: NormalizedSeasonRow[]; seasonCtx: number }>();
+      for (const r of missRows) {
+        const pid = String(r.spl_player_id);
+        const entry = missingRowsByPlayer.get(pid) ?? { rows: [], seasonCtx: seasonYear };
+        entry.rows.push(r);
+        missingRowsByPlayer.set(pid, entry);
+      }
+      for (const r of missPrevRows) {
+        const pid = String(r.spl_player_id);
+        if (!missingRowsByPlayer.has(pid)) {
+          missingRowsByPlayer.set(pid, { rows: [r], seasonCtx: prevSeasonYear });
+        }
+      }
+
+      const sideTierRaw = side === "home" ? homeTier : awayTier;
+      const sideTier = Number.isFinite(Number(sideTierRaw)) ? Number(sideTierRaw) : 99;
+      const sideCeiling =
+        sideTier < 99
+          ? isWomen
+            ? sideTier <= 1
+              ? 92
+              : sideTier <= 2
+                ? 78
+                : 22
+            : sideTier <= 1
+              ? 92
+              : sideTier === 2
+                ? 78
+                : sideTier === 3
+                  ? 64
+                  : sideTier === 4
+                    ? 50
+                    : sideTier === 5
+                      ? 36
+                      : 28
+          : 100;
+
+      const missing = Array.from(missingRowsByPlayer.entries()).map(([pid, { rows, seasonCtx }]) => {
+        const sideCategoryKey = side === "home" ? homeCategoryKey : awayCategoryKey;
+        const preferredRows = pickPreferredRows(rows, teamId, sideCategoryKey, matchGender);
+        const best = preferredRows.reduce((a, b) => (Number(a.minutes ?? 0) >= Number(b.minutes ?? 0) ? a : b));
+        const { importance: rawImp, ceiling: rawCeiling } = calcWeightedImportance(preferredRows, seasonCtx);
+
+        return {
+          spl_player_id: pid,
+          player_name: best.player_name ?? null,
+          birth_year: birthYearById.get(pid) ?? null,
+          starts: preferredRows.reduce((s, r) => s + Number(r.starts ?? 0), 0),
+          minutes: preferredRows.reduce((s, r) => s + Number(r.minutes ?? 0), 0),
+          goals: preferredRows.reduce((s, r) => s + Number(r.goals ?? 0), 0),
+          importance: Math.min(rawImp, sideCeiling),
+          importanceCeiling: Math.min(rawCeiling, sideCeiling),
+          fromPrevSeason: seasonCtx === prevSeasonYear,
+        };
+      });
+
+      const missingImpact = missing.reduce((s, p) => s + Number(p.importance ?? 0), 0);
+      missing.sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0));
+
+      return { missing, missingImpact };
+    }
+
+    const [homeMissing, awayMissing] = await Promise.all([
+      buildMissingLikelyXI("home"),
+      buildMissingLikelyXI("away"),
+    ]);
+
+    const homeRating = sideRating(home, homeStrength, homeMissing.missingImpact);
+    const awayRating = sideRating(away, awayStrength, awayMissing.missingImpact);
+
+    const homeOverall = computeOverall({
+      teamStrength: homeRating.effectiveStrength,
+      tier: homeTier,
+      total: homeRating.total,
+      coverage: homeRating.coverage,
+      missingImpact: homeMissing.missingImpact,
+      women: isWomen,
     });
 
-    const missingImpact = missing.reduce((s, p) => s + Number(p.importance ?? 0), 0);
-    missing.sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0));
-
-    return { missing, missingImpact };
-  }
-
-  const [homeMissing, awayMissing] = await Promise.all([
-    buildMissingLikelyXI("home"),
-    buildMissingLikelyXI("away"),
-  ]);
-
-  const homeRating = sideRating(home, homeStrength, homeMissing.missingImpact);
-  const awayRating = sideRating(away, awayStrength, awayMissing.missingImpact);
-
-  const homeOverall = computeOverall({
-    teamStrength: homeRating.effectiveStrength,
-    tier: homeTier,
-    total: homeRating.total,
-    coverage: homeRating.coverage,
-    missingImpact: homeMissing.missingImpact,
-    women: isWomen,
-  });
-
-  const awayOverall = computeOverall({
-    teamStrength: awayRating.effectiveStrength,
-    tier: awayTier,
-    total: awayRating.total,
-    coverage: awayRating.coverage,
-    missingImpact: awayMissing.missingImpact,
-    women: isWomen,
-  });
-
-  const pricing = computeOdds({
-    homeTier,
-    awayTier,
-    homeRawStrength: homeRating.effectiveStrength,
-    awayRawStrength: awayRating.effectiveStrength,
-    homeMissingImpact: homeMissing.missingImpact,
-    awayMissingImpact: awayMissing.missingImpact,
-  });
-
-  function missingGoalsPerGame(missing: any[], tier: number | null): number {
-    const t = Number.isFinite(Number(tier)) ? Number(tier) : 3;
-    const maxG = t <= 3 ? 22 : t === 4 ? 18 : 14;
-    return missing.reduce((s, p) => s + Number(p.goals ?? 0) / maxG, 0);
-  }
-
-  const goalsModel = computeGoals({
-    homeTier,
-    awayTier,
-    homeStrength,
-    awayStrength,
-    homeMissingGoals: missingGoalsPerGame(homeMissing.missing, homeTier),
-    awayMissingGoals: missingGoalsPerGame(awayMissing.missing, awayTier),
-  });
-
-  return NextResponse.json({
-    inputUrl,
-    season_year: seasonYear,
-    teams: resolvedTeams,
-    teamStrength: { home: homeRating.effectiveStrength, away: awayRating.effectiveStrength },
-    teamStrengthDebug,
-    overall: { home: homeOverall, away: awayOverall },
-    ...pricing,
-    goals: goalsModel,
-    home: {
-      ...home,
-      rating: homeRating,
-      missingLikelyXI: homeMissing.missing,
-      missingImpact: homeMissing.missingImpact,
-    },
-    away: {
-      ...away,
-      rating: awayRating,
-      missingLikelyXI: awayMissing.missing,
+    const awayOverall = computeOverall({
+      teamStrength: awayRating.effectiveStrength,
+      tier: awayTier,
+      total: awayRating.total,
+      coverage: awayRating.coverage,
       missingImpact: awayMissing.missingImpact,
-    },
-    model_version: "v3_finland_computed_table",
-  });
+      women: isWomen,
+    });
+
+    const pricing = computeOdds({
+      homeTier,
+      awayTier,
+      homeRawStrength: homeRating.effectiveStrength,
+      awayRawStrength: awayRating.effectiveStrength,
+      homeMissingImpact: homeMissing.missingImpact,
+      awayMissingImpact: awayMissing.missingImpact,
+    });
+
+    function missingGoalsPerGame(missing: any[], tier: number | null): number {
+      const t = Number.isFinite(Number(tier)) ? Number(tier) : 3;
+      const maxG = t <= 3 ? 22 : t === 4 ? 18 : 14;
+      return missing.reduce((s, p) => s + Number(p.goals ?? 0) / maxG, 0);
+    }
+
+    const goalsModel = computeGoals({
+      homeTier,
+      awayTier,
+      homeStrength,
+      awayStrength,
+      homeMissingGoals: missingGoalsPerGame(homeMissing.missing, homeTier),
+      awayMissingGoals: missingGoalsPerGame(awayMissing.missing, awayTier),
+    });
+
+    return NextResponse.json({
+      inputUrl,
+      season_year: seasonYear,
+      teams: resolvedTeams,
+      teamStrength: { home: homeRating.effectiveStrength, away: awayRating.effectiveStrength },
+      teamStrengthDebug,
+      overall: { home: homeOverall, away: awayOverall },
+      ...pricing,
+      goals: goalsModel,
+      home: {
+        ...home,
+        rating: homeRating,
+        missingLikelyXI: homeMissing.missing,
+        missingImpact: homeMissing.missingImpact,
+      },
+      away: {
+        ...away,
+        rating: awayRating,
+        missingLikelyXI: awayMissing.missing,
+        missingImpact: awayMissing.missingImpact,
+      },
+      model_version: "v3_finland_computed_table",
+    });
+   } catch (e: any) {
+    console.error("lineup-stats error:", e);
+    return NextResponse.json(
+      { error: e?.message ?? "Unknown server error" },
+      { status: 500 },
+    );
+  }
 }

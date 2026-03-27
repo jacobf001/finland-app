@@ -28,6 +28,8 @@ function SideHeaderCard({
     competition_name?: string | null;
     competition_tier?: number | null;
     strength?: number | null;
+    position?: number | null;
+    group_name?: string | null;
   } | null;
 }) {
   const isHome = side === "Home";
@@ -95,16 +97,22 @@ export default function HomePage() {
         season: String(seasonYear),
       });
 
-      const res = await fetch(`/api/lineup-stats?${qs.toString()}`, {
-        cache: "no-store",
-      });
-      const json = await res.json();
+      const res = await fetch(`/api/lineup-stats?${qs.toString()}`);
+      const text = await res.text();
 
-      if (!res.ok) {
-        throw new Error(json?.error ?? `Request failed (${res.status})`);
+      let data: any;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch {
+        console.error("Non-JSON response:", text);
+        throw new Error("API did not return valid JSON");
       }
 
-      setAnalysis(json);
+      if (!res.ok) {
+        throw new Error(data?.error || `Request failed (${res.status})`);
+      }
+
+      setAnalysis(data);
     } catch (e: any) {
       setAnalysisError(e?.message ?? "Failed to analyze lineup");
     } finally {
@@ -367,8 +375,8 @@ function ModelCard({ analysis }: { analysis: any }) {
           const isBlue = color === "blue";
           const tierLabel =
             tier != null && Number.isFinite(Number(tier)) && Number(tier) < 90
-                ? `T${tier}`
-                : "—";
+              ? `T${tier}`
+              : "—";
           const tierColor =
             tier == null
               ? "text-white/20 bg-white/5 border-white/5"
@@ -453,39 +461,39 @@ function MissingLikelyXI({
 
       <div className="mt-3 space-y-1">
         {items.slice(0, 8).map((p, i) => {
-            const ceiling = p.importanceCeiling ?? 100;
-            const color = impactColor(p.importance, ceiling);
-            const label = impactLabel(p.importance, ceiling);
+          const ceiling = p.importanceCeiling ?? 100;
+          const color = impactColor(p.importance, ceiling);
+          const label = impactLabel(p.importance, ceiling);
 
-            return (
-                <div
-                key={`${p.spl_player_id ?? "missing"}-${p.player_name ?? "unknown"}-${i}`}
-                className="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-white/3 transition-colors"
-                >
-                <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-sm text-white/85 truncate">
-                    {p.player_name ?? `Player ${p.spl_player_id}`}
-                    </span>
-                    {p.birth_year && (
-                    <span className="text-xs text-white/30 font-mono shrink-0">{p.birth_year}</span>
-                    )}
-                    {p.goals != null && p.goals > 0 && (
-                    <span className="text-xs font-mono text-emerald-400/80 shrink-0">⚽ {p.goals}</span>
-                    )}
-                </div>
-                <div className="flex items-center gap-2 shrink-0 ml-3">
-                    {label && (
-                    <span className={`text-xs font-mono opacity-60 ${color}`}>
-                        {label}
-                    </span>
-                    )}
-                    <span className={`text-sm font-bold font-mono text-right ${color}`}>
-                    {p.importance}
-                    <span className="text-white/25 font-normal">/{ceiling}</span>
-                    </span>
-                </div>
-                </div>
-            );
+          return (
+            <div
+              key={`${p.spl_player_id ?? "missing"}-${p.player_name ?? "unknown"}-${i}`}
+              className="flex items-center justify-between py-1.5 px-2 rounded-lg hover:bg-white/3 transition-colors"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="text-sm text-white/85 truncate">
+                  {p.player_name ?? `Player ${p.spl_player_id}`}
+                </span>
+                {p.birth_year && (
+                  <span className="text-xs text-white/30 font-mono shrink-0">{p.birth_year}</span>
+                )}
+                {p.goals != null && p.goals > 0 && (
+                  <span className="text-xs font-mono text-emerald-400/80 shrink-0">⚽ {p.goals}</span>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0 ml-3">
+                {label && (
+                  <span className={`text-xs font-mono opacity-60 ${color}`}>
+                    {label}
+                  </span>
+                )}
+                <span className={`text-sm font-bold font-mono text-right ${color}`}>
+                  {p.importance}
+                  <span className="text-white/25 font-normal">/{ceiling}</span>
+                </span>
+              </div>
+            </div>
+          );
         })}
       </div>
     </div>
@@ -651,38 +659,43 @@ function PlayerAnalysisTable({
                           )}
 
                           {p.seasons?.filter((s: any) => s.club_ctx?.competition_tier !== 99).length > 0 ? (
-                            p.seasons.filter((s: any) => s.club_ctx?.competition_tier !== 99).map((s: any, i: number) => (
+                            p.seasons
+                              .filter((s: any) => s.club_ctx?.competition_tier !== 99)
+                              .map((s: any, i: number) => (
                                 <div key={i} className="flex gap-1">
-                                    <span className="text-white/30 w-12 shrink-0">{s.season_year ?? "—"}</span>
-                                    <span>
+                                  <span className="text-white/30 w-12 shrink-0">{s.season_year ?? "—"}</span>
+                                  <span>
                                     {s.team_name ?? "—"}
                                     {s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}
                                     {s.club_ctx?.position ? ` · Pos ${s.club_ctx.position}` : ""}
                                     {s.minutes ? ` (${s.minutes}m)` : ""}
-                                    </span>
+                                  </span>
                                 </div>
-                                ))
-                              ) : (
-                                <div className="flex gap-1">
-                                    <span className="text-white/30 w-12">—</span>
-                                    <span>—</span>
-                                </div>
-                                )}
-
-                          {p.prevSeasons?.filter((ps: any) => ps.club_ctx?.competition_tier !== 99).length > 0 ? (
-                            p.prevSeasons.filter((ps: any) => ps.club_ctx?.competition_tier !== 99).map((ps: any, i: number) => (
-                              <div key={i} className="flex gap-1">
-                                <span className="text-white/30 w-12 shrink-0">Prev</span>
-                                <span>
-                                  {ps.team_name ?? "—"}
-                                  {ps.club_ctx?.competition_tier ? ` · Tier ${ps.club_ctx.competition_tier}` : ""}
-                                  {ps.minutes ? ` (${ps.minutes}m)` : ""}
-                                </span>
-                              </div>
-                            ))
+                              ))
                           ) : (
                             <div className="flex gap-1">
-                              <span className="text-white/30 w-12">Prev</span>
+                              <span className="text-white/30 w-12">—</span>
+                              <span>—</span>
+                            </div>
+                          )}
+
+                          {p.prevSeasons?.filter((ps: any) => ps.club_ctx?.competition_tier !== 99).length > 0 ? (
+                            p.prevSeasons
+                              .filter((ps: any) => ps.club_ctx?.competition_tier !== 99)
+                              .map((ps: any, i: number) => (
+                                <div key={i} className="flex gap-1">
+                                  <span className="text-white/30 w-12 shrink-0">{ps.season_year ?? "—"}</span>
+                                  <span>
+                                    {ps.team_name ?? "—"}
+                                    {ps.club_ctx?.competition_tier ? ` · Tier ${ps.club_ctx.competition_tier}` : ""}
+                                    {ps.club_ctx?.position ? ` · Pos ${ps.club_ctx.position}` : ""}
+                                    {ps.minutes ? ` (${ps.minutes}m)` : ""}
+                                  </span>
+                                </div>
+                              ))
+                          ) : (
+                            <div className="flex gap-1">
+                              <span className="text-white/30 w-12">—</span>
                               <span>—</span>
                             </div>
                           )}
