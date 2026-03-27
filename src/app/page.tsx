@@ -12,7 +12,9 @@ function formatLeagueLine(row: any) {
   if (!row) return "—";
   const name = row.competition_name ?? "—";
   const tier = row.competition_tier ?? "—";
-  return `${name} · Tier ${tier}`;
+  const group = row.group_name && row.group_name !== "Runkosarja" ? ` · ${row.group_name}` : "";
+  const pos = row.position != null ? ` (Pos ${row.position})` : "";
+  return `${name}${group}${pos} · Tier ${tier}`;
 }
 
 function SideHeaderCard({
@@ -648,28 +650,29 @@ function PlayerAnalysisTable({
                             </div>
                           )}
 
-                          {p.seasons?.length > 0 ? (
-                            p.seasons.map((s: any, i: number) => (
-                              <div key={i} className="flex gap-1">
-                                <span className="text-white/30 w-8 shrink-0">Now</span>
-                                <span>
-                                  {s.team_name ?? "—"}
-                                  {s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}
-                                  {s.minutes ? ` (${s.minutes}m)` : ""}
-                                </span>
-                              </div>
-                            ))
-                          ) : (
-                            <div className="flex gap-1">
-                              <span className="text-white/30 w-8">Now</span>
-                              <span>—</span>
-                            </div>
-                          )}
+                          {p.seasons?.filter((s: any) => s.club_ctx?.competition_tier !== 99).length > 0 ? (
+                            p.seasons.filter((s: any) => s.club_ctx?.competition_tier !== 99).map((s: any, i: number) => (
+                                <div key={i} className="flex gap-1">
+                                    <span className="text-white/30 w-12 shrink-0">{s.season_year ?? "—"}</span>
+                                    <span>
+                                    {s.team_name ?? "—"}
+                                    {s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}
+                                    {s.club_ctx?.position ? ` · Pos ${s.club_ctx.position}` : ""}
+                                    {s.minutes ? ` (${s.minutes}m)` : ""}
+                                    </span>
+                                </div>
+                                ))
+                              ) : (
+                                <div className="flex gap-1">
+                                    <span className="text-white/30 w-12">—</span>
+                                    <span>—</span>
+                                </div>
+                                )}
 
-                          {p.prevSeasons?.length > 0 ? (
-                            p.prevSeasons.map((ps: any, i: number) => (
+                          {p.prevSeasons?.filter((ps: any) => ps.club_ctx?.competition_tier !== 99).length > 0 ? (
+                            p.prevSeasons.filter((ps: any) => ps.club_ctx?.competition_tier !== 99).map((ps: any, i: number) => (
                               <div key={i} className="flex gap-1">
-                                <span className="text-white/30 w-8 shrink-0">Prev</span>
+                                <span className="text-white/30 w-12 shrink-0">Prev</span>
                                 <span>
                                   {ps.team_name ?? "—"}
                                   {ps.club_ctx?.competition_tier ? ` · Tier ${ps.club_ctx.competition_tier}` : ""}
@@ -679,7 +682,7 @@ function PlayerAnalysisTable({
                             ))
                           ) : (
                             <div className="flex gap-1">
-                              <span className="text-white/30 w-8">Prev</span>
+                              <span className="text-white/30 w-12">Prev</span>
                               <span>—</span>
                             </div>
                           )}

@@ -1,4 +1,3 @@
-// src/app/api/lineup-stats/route.ts
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
 
@@ -15,6 +14,16 @@ type LineupsFromReportResponse = {
   fetchUrl: string;
   counts: { startersHome: number; startersAway: number; benchHome: number; benchAway: number };
   teams?: TeamsBlock;
+  match?: {
+    home_score?: number | null;
+    away_score?: number | null;
+    kickoff_at?: string | null;
+    competition?: {
+      gender?: string | null;
+      tier?: number | null;
+      category_name?: string | null;
+    } | null;
+  } | null;
   home: TeamLineup;
   away: TeamLineup;
 };
@@ -34,6 +43,28 @@ type NormalizedSeasonRow = {
   goals: number;
   yellows: number;
   reds: number;
+};
+
+type TeamTableRow = {
+  season_year: number;
+  spl_competition_id: string | null;
+  group_id: string | null;
+  group_name: string | null;
+  competition_name: string | null;
+  competition_category: string | null;
+  competition_tier: number | null;
+  team_spl_id: string | null;
+  played: number;
+  points: number;
+  position: number | null;
+  wins: number;
+  draws: number;
+  losses: number;
+  goals_for: number;
+  goals_against: number;
+  goal_diff: number;
+  team_name: string | null;
+  club_name: string | null;
 };
 
 function parseSeasonYear(input: string | null): number | null {
@@ -91,11 +122,150 @@ function normalizeSeasonRows(rows: any[] = []): NormalizedSeasonRow[] {
   }));
 }
 
-function isWomenRow(row: Pick<NormalizedSeasonRow, "gender" | "competition_category"> | null | undefined) {
+function normalizeCategoryKey(category: string | null | undefined): string {
+  if (!category) return "";
+  const c = category.toLowerCase().trim();
+
+  if (c.includes("p20") || c.includes("u20")) return "u20";
+  if (c.includes("p19") || c.includes("u19")) return "u19";
+  if (c.includes("p18") || c.includes("u18")) return "u18";
+  if (c.includes("p17") || c.includes("u17")) return "u17";
+
+  if (c.includes("kansallinen liiga")) return "women_t1";
+  if (c.includes("kansallinen ykkönen")) return "women_t2";
+  if (c.includes("kansallinen kakkonen")) return "women_t3";
+
+  if (c.includes("naiset") || c.includes("naisten") || c.includes("women")) return "women";
+  if (c.includes("miehet") || c.includes("miesten") || c.includes("men")) return "men";
+  if (c.includes("suomen cup")) return "cup";
+
+  return c;
+}
+
+function chooseDominantCategory(rows: NormalizedSeasonRow[]): string | null {
+  if (!rows.length) return null;
+
+  const scores = new Map<string, number>();
+  for (const r of rows) {
+    const key = normalizeCategoryKey(r.competition_category);
+    if (!key) continue;
+    const score =
+      Number(r.minutes ?? 0) +
+      Number(r.starts ?? 0) * 200 +
+      Number(r.matches_played ?? 0) * 25;
+    scores.set(key, (scores.get(key) ?? 0) + score);
+  }
+
+  let bestKey: string | null = null;
+  let bestScore = -1;
+  for (const [key, score] of scores.entries()) {
+    if (score > bestScore) {
+      bestScore = score;
+      bestKey = key;
+    }
+  }
+  return bestKey;
+}
+
+function genderMatches(rowGender: string | null | undefined, wantedGender: string | null | undefined) {
+  if (!wantedGender) return true;
+  if (!rowGender) return false;
+  return String(rowGender).toLowerCase() === String(wantedGender).toLowerCase();
+}
+
+function pickPreferredRows(
+  rows: NormalizedSeasonRow[],
+  teamId: string | null | undefined,
+  preferredCategoryKey: string | null | undefined,
+  preferredGender: string | null | undefined,
+) {
+  if (!rows.length) return [];
+
+  const genderRows = rows.filter((r) => genderMatches(r.gender, preferredGender));
+
+  const teamRows = teamId
+    ? genderRows.filter((r) => String(r.spl_team_id ?? "") === String(teamId))
+    : [];
+
+  const teamAndCategoryRows =
+    teamRows.length > 0 && preferredCategoryKey
+      ? teamRows.filter((r) => normalizeCategoryKey(r.competition_category) === preferredCategoryKey)
+      : [];
+
+  if (teamAndCategoryRows.length > 0) {
+    return teamAndCategoryRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
+  }
+
+  if (teamRows.length > 0) {
+    return teamRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
+  }
+
+  const categoryRows = preferredCategoryKey
+    ? genderRows.filter((r) => normalizeCategoryKey(r.competition_category) === preferredCategoryKey)
+    : [];
+
+  if (categoryRows.length > 0) {
+    return categoryRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
+  }
+
+  if (genderRows.length > 0) {
+    return genderRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
+  }
+
+  return rows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
+}
+
+function bestSideTeamName(rows: NormalizedSeasonRow[], preferredCategoryKey: string | null | undefined): string | null {
+  const filtered = preferredCategoryKey
+    ? rows.filter((r) => normalizeCategoryKey(r.competition_category) === preferredCategoryKey)
+    : rows;
+
+  const source = filtered.length > 0 ? filtered : rows;
+  if (!source.length) return null;
+
+  const scores = new Map<string, number>();
+  for (const r of source) {
+    const name = String(r.team_name ?? "").trim();
+    if (!name) continue;
+
+    const score =
+      Number(r.minutes ?? 0) +
+      Number(r.starts ?? 0) * 200 +
+      Number(r.matches_played ?? 0) * 25;
+
+    scores.set(name, (scores.get(name) ?? 0) + score);
+  }
+
+  let best: string | null = null;
+  let bestScore = -1;
+  for (const [name, score] of scores.entries()) {
+    if (score > bestScore) {
+      best = name;
+      bestScore = score;
+    }
+  }
+
+  return best;
+}
+
+function isWomenName(name: string | null | undefined): boolean {
+  if (!name) return false;
+  const n = name.toLowerCase();
+  return (
+    n.includes("naiset") ||
+    n.includes("naisten") ||
+    n.includes("women") ||
+    n.includes("kansallinen liiga") ||
+    n.includes("kansallinen ykkönen") ||
+    n.includes("kansallinen kakkonen")
+  );
+}
+
+function isWomenRow(row: Pick<NormalizedSeasonRow, "competition_category" | "gender"> | null | undefined) {
   if (!row) return false;
-  const g = String(row.gender ?? "").toLowerCase();
   const c = String(row.competition_category ?? "").toLowerCase();
-  return g === "female" || c.includes("naiset");
+  const g = String(row.gender ?? "").toLowerCase();
+  return g === "female" || c.includes("naiset") || c.includes("kansallinen");
 }
 
 function isYouthCategory(category: string | null | undefined) {
@@ -120,120 +290,6 @@ function isYouthCategory(category: string | null | undefined) {
   );
 }
 
-function normalizeCategoryKey(category: string | null | undefined): string {
-  if (!category) return "";
-  const c = category.toLowerCase().trim();
-
-  if (c.includes("p20") || c.includes("u20")) return "u20";
-  if (c.includes("p19") || c.includes("u19")) return "u19";
-  if (c.includes("p18") || c.includes("u18")) return "u18";
-  if (c.includes("p17") || c.includes("u17")) return "u17";
-  if (c.includes("naiset")) return "women";
-  if (c.includes("miehet") || c.includes("miesten")) return "men";
-  if (c.includes("suomen cup")) return "cup";
-  return c;
-}
-
-function chooseDominantCategory(rows: NormalizedSeasonRow[]): string | null {
-  if (!rows.length) return null;
-
-  const scores = new Map<string, number>();
-
-  for (const r of rows) {
-    const key = normalizeCategoryKey(r.competition_category);
-    if (!key) continue;
-
-    const score =
-      Number(r.minutes ?? 0) +
-      Number(r.starts ?? 0) * 200 +
-      Number(r.matches_played ?? 0) * 25;
-
-    scores.set(key, (scores.get(key) ?? 0) + score);
-  }
-
-  let bestKey: string | null = null;
-  let bestScore = -1;
-
-  for (const [key, score] of scores.entries()) {
-    if (score > bestScore) {
-      bestScore = score;
-      bestKey = key;
-    }
-  }
-
-  return bestKey;
-}
-
-function pickPreferredRows(
-  rows: NormalizedSeasonRow[],
-  teamId: string | null | undefined,
-  preferredCategoryKey: string | null | undefined,
-) {
-  if (!rows.length) return [];
-
-  const teamRows = teamId
-    ? rows.filter((r) => String(r.spl_team_id ?? "") === String(teamId))
-    : [];
-
-  const teamAndCategoryRows =
-    teamRows.length > 0 && preferredCategoryKey
-      ? teamRows.filter((r) => normalizeCategoryKey(r.competition_category) === preferredCategoryKey)
-      : [];
-
-  if (teamAndCategoryRows.length > 0) {
-    return teamAndCategoryRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
-  }
-
-  if (teamRows.length > 0) {
-    return teamRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
-  }
-
-  const categoryRows = preferredCategoryKey
-    ? rows.filter((r) => normalizeCategoryKey(r.competition_category) === preferredCategoryKey)
-    : [];
-
-  if (categoryRows.length > 0) {
-    return categoryRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
-  }
-
-  return rows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
-}
-
-function bestSideTeamName(rows: NormalizedSeasonRow[], preferredCategoryKey: string | null | undefined): string | null {
-  const filtered = preferredCategoryKey
-    ? rows.filter((r) => normalizeCategoryKey(r.competition_category) === preferredCategoryKey)
-    : rows;
-
-  const source = filtered.length > 0 ? filtered : rows;
-  if (!source.length) return null;
-
-  const scores = new Map<string, number>();
-
-  for (const r of source) {
-    const name = String(r.team_name ?? "").trim();
-    if (!name) continue;
-
-    const score =
-      Number(r.minutes ?? 0) +
-      Number(r.starts ?? 0) * 200 +
-      Number(r.matches_played ?? 0) * 25;
-
-    scores.set(name, (scores.get(name) ?? 0) + score);
-  }
-
-  let best: string | null = null;
-  let bestScore = -1;
-
-  for (const [name, score] of scores.entries()) {
-    if (score > bestScore) {
-      best = name;
-      bestScore = score;
-    }
-  }
-
-  return best;
-}
-
 function tierQualityN(tier: number | null | undefined, women = false) {
   const t = Number.isFinite(Number(tier)) ? Number(tier) : 6;
   if (t <= 1) return 1.0;
@@ -251,20 +307,125 @@ function tierQualityN(tier: number | null | undefined, women = false) {
   return 0.25;
 }
 
-function tierStrengthAnchor(tier: number | null | undefined, women = false) {
-  const t = Number.isFinite(Number(tier)) ? Number(tier) : 6;
-  if (t <= 1) return 0.42;
+function tierScale(tier: number, women = false) {
+  const t = Number.isFinite(tier) ? tier : 99;
+  if (t <= 1) return 1.0;
   if (women) {
-    if (t === 2) return 0.18;
+    if (t === 2) return 0.25;
     if (t === 3) return 0.06;
     if (t === 4) return 0.03;
     return 0.02;
   }
-  if (t === 2) return 0.28;
-  if (t === 3) return 0.18;
-  if (t === 4) return 0.12;
-  if (t === 5) return 0.07;
-  return 0.04;
+  if (t === 2) return 0.78;
+  if (t === 3) return 0.58;
+  if (t === 4) return 0.43;
+  return 0.32;
+}
+
+function posMultiplier(position: number | null, leagueSize: number | null) {
+  if (!position || !leagueSize || leagueSize <= 1) return 1.0;
+  const posN = clamp01(1 - (position - 1) / (leagueSize - 1));
+  return 0.75 + 0.4 * posN;
+}
+
+function leagueSizeForTier(tier: number | null): number | null {
+  const t = Number.isFinite(Number(tier)) ? Number(tier) : null;
+  if (t === null) return null;
+  if (t <= 3) return 12;
+  if (t === 4) return 10;
+  if (t === 5) return 8;
+  return 12;
+}
+
+function strengthFromTableRow(row: TeamTableRow | null | undefined) {
+  if (!row) {
+    return {
+      played: 0,
+      points: 0,
+      tier: null as number | null,
+      position: null as number | null,
+      ppm: 0,
+      base: 0,
+      scale: 0,
+      posMul: 1,
+      strength: 0.15,
+    };
+  }
+
+  const played = Number(row.played ?? 0);
+  const points = Number(row.points ?? 0);
+  const tier = Number.isFinite(Number(row.competition_tier)) ? Number(row.competition_tier) : null;
+  const position = Number.isFinite(Number(row.position)) ? Number(row.position) : null;
+  const women = isWomenName(row.competition_name) || isWomenName(row.competition_category);
+  const ppm = played > 0 ? points / played : 0;
+  const base = clamp01(ppm / 3);
+  const scale = tierScale(tier ?? 99, women);
+  const posMul = posMultiplier(position, leagueSizeForTier(tier));
+
+  return {
+    played,
+    points,
+    tier,
+    position,
+    ppm,
+    base,
+    scale,
+    posMul,
+    strength: clamp01(base * scale * posMul),
+  };
+}
+
+function blendStrength(current: number, prev: number, played: number, tier: number | null = null) {
+  const w = clamp01(played / 8);
+  const blended = w * current + (1 - w) * prev;
+
+  const TIER_FLOORS: Record<number, number> = { 1: 0.55, 2: 0.35, 3: 0.2, 4: 0.12, 5: 0.06 };
+  const TIER_CEILINGS: Record<number, number> = { 1: 1.0, 2: 0.54, 3: 0.34, 4: 0.19, 5: 0.11 };
+
+  const t = Number.isFinite(Number(tier)) ? Number(tier) : null;
+  const floor = t !== null ? (TIER_FLOORS[t] ?? 0.04) : 0;
+  const ceiling = t !== null ? (TIER_CEILINGS[t] ?? 1.0) : 1.0;
+  const effectiveFloor = floor * Math.max(0, 1 - played / 8);
+
+  return clamp01(Math.min(Math.max(blended, effectiveFloor), ceiling));
+}
+
+function chooseBestTeamTableRow(
+  rows: TeamTableRow[],
+  preferredCategoryKey?: string | null,
+  preferredTeamName?: string | null,
+): TeamTableRow | null {
+  if (!rows.length) return null;
+
+  const leagueRows = rows.filter((r) => Number(r.competition_tier ?? 99) < 99);
+  const source = leagueRows.length > 0 ? leagueRows : rows;
+
+  const categoryRows = preferredCategoryKey
+    ? source.filter((r) => normalizeCategoryKey(r.competition_category) === preferredCategoryKey)
+    : [];
+
+  const byCategory = categoryRows.length > 0 ? categoryRows : source;
+
+  if (preferredTeamName) {
+    const exactNameRows = byCategory.filter((r) => String(r.team_name ?? "").trim() === preferredTeamName.trim());
+    if (exactNameRows.length > 0) {
+      return exactNameRows.reduce((best: TeamTableRow | null, r) => {
+        if (!best) return r;
+        if (Number(r.played ?? 0) > Number(best.played ?? 0)) return r;
+        if (Number(r.played ?? 0) === Number(best.played ?? 0) && Number(r.position ?? 999) < Number(best.position ?? 999)) return r;
+        return best;
+      }, null);
+    }
+  }
+
+  return byCategory.reduce((best: TeamTableRow | null, r) => {
+    if (!best) return r;
+    const bestTier = Number(best.competition_tier ?? 99);
+    const tier = Number(r.competition_tier ?? 99);
+    if (tier < bestTier) return r;
+    if (tier === bestTier && Number(r.played ?? 0) > Number(best.played ?? 0)) return r;
+    return best;
+  }, null);
 }
 
 function calcImportance(params: {
@@ -357,9 +518,9 @@ function computeOverall(params: {
 
   const overallN =
     0.18 * tierN +
-    0.30 * strengthN +
+    0.3 * strengthN +
     0.42 * lineupN +
-    0.10 * coverageN -
+    0.1 * coverageN -
     0.12 * missingN;
 
   return Math.round(clamp01(overallN) * 100);
@@ -386,7 +547,7 @@ function computeOdds(params: {
   const awayMissingNorm = clamp(params.awayMissingImpact / ((MISSING_CEILINGS[awayTier] ?? 64) * 4), 0, 1);
 
   const tierGap = Math.abs(homeTier - awayTier);
-  const missingCap = clamp(1.0 - tierGap * 0.25, 0.10, 1.0);
+  const missingCap = clamp(1.0 - tierGap * 0.25, 0.1, 1.0);
   const missingAdj = (awayMissingNorm - homeMissingNorm) * 0.9 * missingCap;
 
   const tierAdv = clamp(
@@ -480,12 +641,12 @@ function computeGoals(params: {
   awayXG = awayXG * (1 - clamp(params.awayMissingGoals / Math.max(0.01, baseAway * 2), 0, awayMissingCap));
 
   const MAX_GOALS = 6;
-  let p_over15 = 0,
-    p_over25 = 0,
-    p_over35 = 0,
-    p_btts = 0,
-    p_under15 = 0,
-    p_under25 = 0;
+  let p_over15 = 0;
+  let p_over25 = 0;
+  let p_over35 = 0;
+  let p_btts = 0;
+  let p_under15 = 0;
+  let p_under25 = 0;
 
   for (let h = 0; h <= MAX_GOALS; h++) {
     for (let a = 0; a <= MAX_GOALS; a++) {
@@ -529,49 +690,28 @@ function maxGamesForTier(tier: number, isYouthComp: boolean, women: boolean): nu
 }
 
 function tierBaseCeiling(tier: number, isYouth: boolean, women: boolean): number {
-  if (isYouth) return 22;
   if (women && tier >= 3) return 22;
   if (tier <= 1) return 92;
   if (tier === 2) return 78;
   if (tier === 3) return 64;
   if (tier === 4) return 50;
   if (tier === 5) return 36;
-  return 28;
+  if (tier === 6) return 28;
+  return 22;
 }
 
 function fallbackTierFromCategory(category: string | null | undefined): number | null {
   if (!category) return null;
   const c = category.toLowerCase();
-  if (c.includes("p20 sm-karsinta")) return 4;
-  if (c.includes("p20 sm")) return 3;
-  if (c.includes("u20")) return 4;
+  if (c.includes("p20 sm") || c.includes("p21 sm")) return 3;
+  if (c.includes("p20 sm-karsinta") || c.includes("p21 sm-karsinta")) return 4;
+  if (c.includes("p20 ykkönen") || c.includes("p21 ykkönen") || c.includes("p20 1") || c.includes("p21 1")) return 3;
+  if (c.includes("p20 kakkonen") || c.includes("p21 kakkonen") || c.includes("p20 2") || c.includes("p21 2")) return 4;
+  if (c.includes("p20 kolmonen") || c.includes("p21 kolmonen") || c.includes("p20 3") || c.includes("p21 3")) return 5;
   if (c.includes("p19") || c.includes("u19")) return 4;
-  if (c.includes("p17") || c.includes("u17")) return 5;
+  if (c.includes("p18") || c.includes("u18")) return 5;
+  if (c.includes("p17") || c.includes("u17")) return 6;
   return null;
-}
-
-function inferPrimaryMeta(rows: NormalizedSeasonRow[]) {
-  if (!rows.length) {
-    return {
-      tier: null as number | null,
-      category: null as string | null,
-      women: false,
-      teamId: null as string | null,
-    };
-  }
-
-  const sorted = [...rows].sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
-  const top = sorted[0];
-
-  return {
-    tier:
-      top.competition_tier != null && Number(top.competition_tier) < 90
-        ? top.competition_tier
-        : fallbackTierFromCategory(top.competition_category),
-    category: top.competition_category ?? null,
-    women: isWomenRow(top),
-    teamId: top.spl_team_id ?? null,
-  };
 }
 
 function calcWeightedImportance(playerRows: NormalizedSeasonRow[], seasonYearCtx: number) {
@@ -593,9 +733,10 @@ function calcWeightedImportance(playerRows: NormalizedSeasonRow[], seasonYearCtx
 
   for (const row of playerRows) {
     const fallbackTier = fallbackTierFromCategory(row.competition_category);
-    const t = Number.isFinite(Number(row.competition_tier)) && Number(row.competition_tier) < 90
-      ? Number(row.competition_tier)
-      : (fallbackTier ?? 99);
+    const t =
+      Number.isFinite(Number(row.competition_tier)) && Number(row.competition_tier) < 90
+        ? Number(row.competition_tier)
+        : (fallbackTier ?? 99);
 
     const isYouth = isYouthCategory(row.competition_category);
     const youthDiscount = isYouth ? 0.35 : 1.0;
@@ -653,47 +794,7 @@ function calcWeightedImportance(playerRows: NormalizedSeasonRow[], seasonYearCtx
   };
 }
 
-function inferTeamStrength(rows: NormalizedSeasonRow[]) {
-  if (!rows.length) {
-    return {
-      strength: 0.15,
-      tier: null as number | null,
-      women: false,
-      competition_name: null as string | null,
-    };
-  }
-
-  const topRows = [...rows].sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0)).slice(0, 14);
-  const meta = inferPrimaryMeta(topRows);
-  const women = meta.women;
-  const tier = meta.tier ?? 6;
-
-  const minutesTotal = topRows.reduce((s, r) => s + Number(r.minutes ?? 0), 0);
-  const startsTotal = topRows.reduce((s, r) => s + Number(r.starts ?? 0), 0);
-  const goalsTotal = topRows.reduce((s, r) => s + Number(r.goals ?? 0), 0);
-
-  const avgMinutes = topRows.length ? minutesTotal / topRows.length : 0;
-  const avgStarts = topRows.length ? startsTotal / topRows.length : 0;
-  const avgGoals = topRows.length ? goalsTotal / topRows.length : 0;
-
-  const maxGames = maxGamesForTier(tier, isYouthCategory(meta.category), women);
-  const minutesN = clamp01(avgMinutes / Math.max(1, maxGames * 90));
-  const startsN = clamp01(avgStarts / Math.max(1, maxGames));
-  const goalsN = clamp01(avgGoals / 8);
-
-  const anchor = tierStrengthAnchor(tier, women);
-  const squadForm = clamp01(minutesN * 0.55 + startsN * 0.35 + goalsN * 0.1);
-  const strength = clamp(anchor * (0.75 + 0.65 * squadForm), 0.02, 1.0);
-
-  return {
-    strength,
-    tier,
-    women,
-    competition_name: meta.category,
-  };
-}
-
-async function getLikelyXI(teamId: string, seasonYear: number) {
+async function getLikelyXI(teamId: string, seasonYear: number, matchGender: string | null) {
   const { data, error } = await supabaseAdmin
     .from("player_season_stats")
     .select(`
@@ -719,7 +820,10 @@ async function getLikelyXI(teamId: string, seasonYear: number) {
   if (error) throw new Error(error.message);
 
   const rows = normalizeSeasonRows(data ?? []);
-  const ranked = [...rows].sort((a, b) => {
+  const filteredRows = matchGender ? rows.filter((r) => genderMatches(r.gender, matchGender)) : rows;
+  const source = filteredRows.length > 0 ? filteredRows : rows;
+
+  const ranked = [...source].sort((a, b) => {
     const aScore = Number(a.starts ?? 0) * 1000 + Number(a.minutes ?? 0);
     const bScore = Number(b.starts ?? 0) * 1000 + Number(b.minutes ?? 0);
     return bScore - aScore;
@@ -765,6 +869,10 @@ export async function GET(req: Request) {
     home: { spl_team_id: null, team_name: null },
     away: { spl_team_id: null, team_name: null },
   };
+
+  const matchGender = lineupJson.match?.competition?.gender ?? null;
+  const matchCategoryName = lineupJson.match?.competition?.category_name ?? null;
+  const matchCategoryKey = normalizeCategoryKey(matchCategoryName);
 
   const homePlayers = uniqById([...lineupJson.home.starters, ...lineupJson.home.bench]);
   const awayPlayers = uniqById([...lineupJson.away.starters, ...lineupJson.away.bench]);
@@ -857,55 +965,241 @@ export async function GET(req: Request) {
   const awayTeamId = teams.away.spl_team_id;
 
   const teamNameById = new Map<string, string>();
-  const statTeamIds = Array.from(
-    new Set(
-      [...seasonRows, ...prevSeasonRows]
-        .map((r) => (r.spl_team_id ? String(r.spl_team_id) : ""))
-        .filter(Boolean),
-    ),
-  );
-  const teamIdsToLoad = Array.from(new Set([homeTeamId, awayTeamId, ...statTeamIds].filter(Boolean))) as string[];
+  const teamIdsToLoad = Array.from(new Set([homeTeamId, awayTeamId].filter(Boolean))) as string[];
 
   if (teamIdsToLoad.length) {
     const { data: teamRows, error: teamErr } = await supabaseAdmin
       .from("teams")
       .select("spl_team_id, team_name, club_name")
-      .in("spl_team_id", teamIdsToLoad);
+      .or(
+        [
+          `spl_team_id.in.(${teamIdsToLoad.join(",")})`,
+        ].join(","),
+      );
 
     if (teamErr) return NextResponse.json({ error: teamErr.message }, { status: 500 });
 
     for (const t of teamRows ?? []) {
-      const id = String((t as any).spl_team_id);
+      const teamId = (t as any).spl_team_id != null ? String((t as any).spl_team_id) : null;
       const nm = (t as any).team_name ?? (t as any).club_name ?? null;
-      if (nm) teamNameById.set(id, String(nm));
+      if (!nm) continue;
+      if (teamId) teamNameById.set(teamId, String(nm));
     }
   }
 
   const homeTeamSeasonRows = seasonRows.filter((r) => String(r.spl_team_id ?? "") === String(homeTeamId ?? ""));
   const awayTeamSeasonRows = seasonRows.filter((r) => String(r.spl_team_id ?? "") === String(awayTeamId ?? ""));
 
-  const homeCategoryKey = chooseDominantCategory(homeTeamSeasonRows);
-  const awayCategoryKey = chooseDominantCategory(awayTeamSeasonRows);
+  const homeCategoryKey = matchCategoryKey || chooseDominantCategory(homeTeamSeasonRows);
+  const awayCategoryKey = matchCategoryKey || chooseDominantCategory(awayTeamSeasonRows);
 
   const resolvedTeams = {
     home: {
       spl_team_id: homeTeamId,
-      team_name: bestSideTeamName(homeTeamSeasonRows, homeCategoryKey) ?? teams.home?.team_name ?? null,
+      team_name: teams.home?.team_name ?? bestSideTeamName(homeTeamSeasonRows, homeCategoryKey) ?? null,
     },
     away: {
       spl_team_id: awayTeamId,
-      team_name: bestSideTeamName(awayTeamSeasonRows, awayCategoryKey) ?? teams.away?.team_name ?? null,
+      team_name: teams.away?.team_name ?? bestSideTeamName(awayTeamSeasonRows, awayCategoryKey) ?? null,
     },
   };
 
-  const homeTeamMeta = inferTeamStrength(homeTeamSeasonRows);
-  const awayTeamMeta = inferTeamStrength(awayTeamSeasonRows);
+  const [{ data: curTeamRows, error: curTeamErr }, { data: prevTeamRows, error: prevTeamErr }] =
+    await Promise.all([
+      teamIdsToLoad.length
+        ? supabaseAdmin
+            .from("computed_league_table")
+            .select(`
+              season_year,
+              spl_competition_id,
+              group_id,
+              group_name,
+              competition_name,
+              competition_category,
+              competition_tier,
+              team_spl_id,
+              played,
+              points,
+              position,
+              wins,
+              draws,
+              losses,
+              goals_for,
+              goals_against,
+              goal_diff,
+              team_name,
+              club_name
+            `)
+            .eq("season_year", seasonYear)
+            .in("team_spl_id", teamIdsToLoad)
+        : Promise.resolve({ data: [], error: null }),
+      teamIdsToLoad.length
+        ? supabaseAdmin
+            .from("computed_league_table")
+            .select(`
+              season_year,
+              spl_competition_id,
+              group_id,
+              group_name,
+              competition_name,
+              competition_category,
+              competition_tier,
+              team_spl_id,
+              played,
+              points,
+              position,
+              wins,
+              draws,
+              losses,
+              goals_for,
+              goals_against,
+              goal_diff,
+              team_name,
+              club_name
+            `)
+            .eq("season_year", prevSeasonYear)
+            .in("team_spl_id", teamIdsToLoad)
+        : Promise.resolve({ data: [], error: null }),
+    ]);
 
-  const homeStrength = homeTeamMeta.strength;
-  const awayStrength = awayTeamMeta.strength;
-  const homeTier = homeTeamMeta.tier;
-  const awayTier = awayTeamMeta.tier;
-  const isWomen = homeTeamMeta.women || awayTeamMeta.women;
+  if (curTeamErr) return NextResponse.json({ error: curTeamErr.message }, { status: 500 });
+  if (prevTeamErr) return NextResponse.json({ error: prevTeamErr.message }, { status: 500 });
+
+  const currentTableRows = (curTeamRows ?? []) as unknown as TeamTableRow[];
+  const previousTableRows = (prevTeamRows ?? []) as unknown as TeamTableRow[];
+
+  const currentByTeam = new Map<string, TeamTableRow[]>();
+  for (const r of currentTableRows) {
+    const id = String((r as any).team_spl_id ?? "");
+    if (!id) continue;
+    const arr = currentByTeam.get(id) ?? [];
+    arr.push(r);
+    currentByTeam.set(id, arr);
+  }
+
+  const previousByTeam = new Map<string, TeamTableRow[]>();
+  for (const r of previousTableRows) {
+    const id = String((r as any).team_spl_id ?? "");
+    if (!id) continue;
+    const arr = previousByTeam.get(id) ?? [];
+    arr.push(r);
+    previousByTeam.set(id, arr);
+  }
+
+  const homeCurrentTable = chooseBestTeamTableRow(
+    currentByTeam.get(String(homeTeamId ?? "")) ?? [],
+    homeCategoryKey,
+    teams.home?.team_name ?? null,
+  );
+
+  const awayCurrentTable = chooseBestTeamTableRow(
+    currentByTeam.get(String(awayTeamId ?? "")) ?? [],
+    awayCategoryKey,
+    teams.away?.team_name ?? null,
+  );
+
+  console.log("homeTeamId", homeTeamId);
+  console.log("awayTeamId", awayTeamId);
+  console.log("teamIdsToLoad", teamIdsToLoad);
+  console.log("current rows found", currentTableRows.length);
+  console.log("previous rows found", previousTableRows.length);
+  console.log("home rows", currentByTeam.get(String(homeTeamId ?? "")));
+  console.log("away rows", currentByTeam.get(String(awayTeamId ?? "")));
+  console.log("homeCurrentTable", homeCurrentTable);
+  console.log("awayCurrentTable", awayCurrentTable);
+
+  const homePrevTable = chooseBestTeamTableRow(
+    previousByTeam.get(String(homeTeamId ?? "")) ?? [],
+    homeCategoryKey,
+    teams.home?.team_name ?? null,
+  );
+
+  const awayPrevTable = chooseBestTeamTableRow(
+    previousByTeam.get(String(awayTeamId ?? "")) ?? [],
+    awayCategoryKey,
+    teams.away?.team_name ?? null,
+  );
+
+  const homeCompName = homeCurrentTable?.competition_name ?? homePrevTable?.competition_name ?? null;
+  const awayCompName = awayCurrentTable?.competition_name ?? awayPrevTable?.competition_name ?? null;
+
+  const homeCurrentStrengthBits = strengthFromTableRow(homeCurrentTable);
+  const awayCurrentStrengthBits = strengthFromTableRow(awayCurrentTable);
+  const homePrevStrengthBits = strengthFromTableRow(homePrevTable);
+  const awayPrevStrengthBits = strengthFromTableRow(awayPrevTable);
+
+  const homeTier = homeCurrentStrengthBits.tier ?? homePrevStrengthBits.tier ?? null;
+  const awayTier = awayCurrentStrengthBits.tier ?? awayPrevStrengthBits.tier ?? null;
+
+  const isWomen =
+    String(matchGender ?? "").toLowerCase() === "female" ||
+    isWomenName(homeCompName) ||
+    isWomenName(awayCompName);
+
+  const homeStrength = blendStrength(
+    homeCurrentStrengthBits.strength,
+    homePrevStrengthBits.strength,
+    homeCurrentStrengthBits.played,
+    homeTier,
+  );
+
+  const awayStrength = blendStrength(
+    awayCurrentStrengthBits.strength,
+    awayPrevStrengthBits.strength,
+    awayCurrentStrengthBits.played,
+    awayTier,
+  );
+
+  const teamStrengthDebug = {
+    home: homeTeamId
+      ? {
+          team_spl_id: String(homeTeamId),
+          competition_tier: homeTier,
+          competition_name: homeCompName,
+          position: homeCurrentStrengthBits.position,
+          played: homeCurrentStrengthBits.played,
+          points: homeCurrentStrengthBits.points,
+          ppm: homeCurrentStrengthBits.ppm,
+          base: homeCurrentStrengthBits.base,
+          scale: homeCurrentStrengthBits.scale,
+          strength: homeStrength,
+          prev: homePrevTable
+            ? {
+                season_year: prevSeasonYear,
+                competition_tier: homePrevStrengthBits.tier,
+                competition_name: homePrevTable.competition_category ?? homePrevTable.competition_name,
+                position: homePrevStrengthBits.position,
+                played: homePrevStrengthBits.played,
+                points: homePrevStrengthBits.points,
+              }
+            : null,
+        }
+      : null,
+    away: awayTeamId
+      ? {
+          team_spl_id: String(awayTeamId),
+          competition_tier: awayTier,
+          competition_name: awayCompName,
+          position: awayCurrentStrengthBits.position,
+          played: awayCurrentStrengthBits.played,
+          points: awayCurrentStrengthBits.points,
+          ppm: awayCurrentStrengthBits.ppm,
+          base: awayCurrentStrengthBits.base,
+          scale: awayCurrentStrengthBits.scale,
+          strength: awayStrength,
+          prev: awayPrevTable
+            ? {
+                season_year: prevSeasonYear,
+                competition_tier: awayPrevStrengthBits.tier,
+                competition_name: awayPrevTable.competition_category ?? awayPrevTable.competition_name,
+                position: awayPrevStrengthBits.position,
+                played: awayPrevStrengthBits.played,
+                points: awayPrevStrengthBits.points,
+              }
+            : null,
+        }
+      : null,
+  };
 
   const { data: lineupRows, error: lineupErr } = await supabaseAdmin
     .from("match_lineups")
@@ -965,8 +1259,8 @@ export async function GET(req: Request) {
     const playerRows = allRowsByPlayer.get(String(p.spl_player_id)) ?? [];
     const prevPlayerRows = allPrevRowsByPlayer.get(String(p.spl_player_id)) ?? [];
 
-    const chosenRows = pickPreferredRows(playerRows, sideTeamId, sideCategoryKey);
-    const prevChosenRows = pickPreferredRows(prevPlayerRows, sideTeamId, sideCategoryKey);
+    const chosenRows = pickPreferredRows(playerRows, sideTeamId, sideCategoryKey, matchGender);
+    const prevChosenRows = pickPreferredRows(prevPlayerRows, sideTeamId, sideCategoryKey, matchGender);
 
     const currResult = chosenRows.length > 0 ? calcWeightedImportance(chosenRows, seasonYear) : null;
     const prevResult = prevChosenRows.length > 0 ? calcWeightedImportance(prevChosenRows, prevSeasonYear) : null;
@@ -1009,9 +1303,10 @@ export async function GET(req: Request) {
 
       const playerHighestTier = [...chosenRows].reduce((best: number, r) => {
         const fallbackTier = fallbackTierFromCategory(r.competition_category);
-        const t = Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
-          ? Number(r.competition_tier)
-          : (fallbackTier ?? 99);
+        const t =
+          Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
+            ? Number(r.competition_tier)
+            : (fallbackTier ?? 99);
         return Number(r.minutes ?? 0) >= 180 && t < best ? t : best;
       }, 99);
 
@@ -1045,7 +1340,6 @@ export async function GET(req: Request) {
         club_ctx: {
           competition_tier: sr.competition_tier,
           competition_category: sr.competition_category,
-          gender: sr.gender,
         },
       };
     });
@@ -1066,7 +1360,6 @@ export async function GET(req: Request) {
         club_ctx: {
           competition_tier: pr.competition_tier,
           competition_category: pr.competition_category,
-          gender: pr.gender,
         },
       };
     });
@@ -1097,7 +1390,7 @@ export async function GET(req: Request) {
     const teamId = side === "home" ? homeTeamId : awayTeamId;
     if (!teamId) return { missing: [], missingImpact: 0 };
 
-    const likely = await getLikelyXI(teamId, seasonYear);
+    const likely = await getLikelyXI(teamId, seasonYear, matchGender);
     const starterIds = new Set((side === "home" ? home.starters : away.starters).map((p) => String(p.spl_player_id)));
     const benchIds = new Set((side === "home" ? home.bench : away.bench).map((p) => String(p.spl_player_id)));
     const presentIds = new Set([...starterIds, ...benchIds]);
@@ -1198,7 +1491,7 @@ export async function GET(req: Request) {
 
     const missing = Array.from(missingRowsByPlayer.entries()).map(([pid, { rows, seasonCtx }]) => {
       const sideCategoryKey = side === "home" ? homeCategoryKey : awayCategoryKey;
-      const preferredRows = pickPreferredRows(rows, teamId, sideCategoryKey);
+      const preferredRows = pickPreferredRows(rows, teamId, sideCategoryKey, matchGender);
       const best = preferredRows.reduce((a, b) => (Number(a.minutes ?? 0) >= Number(b.minutes ?? 0) ? a : b));
       const { importance: rawImp, ceiling: rawCeiling } = calcWeightedImportance(preferredRows, seasonCtx);
 
@@ -1276,20 +1569,7 @@ export async function GET(req: Request) {
     season_year: seasonYear,
     teams: resolvedTeams,
     teamStrength: { home: homeRating.effectiveStrength, away: awayRating.effectiveStrength },
-    teamStrengthDebug: {
-      home: {
-        team_spl_id: homeTeamId,
-        competition_tier: homeTier,
-        competition_name: homeTeamMeta.competition_name,
-        strength: homeStrength,
-      },
-      away: {
-        team_spl_id: awayTeamId,
-        competition_tier: awayTier,
-        competition_name: awayTeamMeta.competition_name,
-        strength: awayStrength,
-      },
-    },
+    teamStrengthDebug,
     overall: { home: homeOverall, away: awayOverall },
     ...pricing,
     goals: goalsModel,
@@ -1305,6 +1585,6 @@ export async function GET(req: Request) {
       missingLikelyXI: awayMissing.missing,
       missingImpact: awayMissing.missingImpact,
     },
-    model_version: "v2_finland_simple",
+    model_version: "v3_finland_computed_table",
   });
 }
