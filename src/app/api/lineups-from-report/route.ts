@@ -1,8 +1,11 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseServer";
-import { chromium } from "playwright";
+import chromium from "@sparticuz/chromium";
+import { chromium as playwright } from "playwright-core";
 
 export const runtime = "nodejs";
+
+export const dynamic = "force-dynamic";
 
 type LineupPlayer = {
   spl_player_id: string;
@@ -59,10 +62,11 @@ function rowToPlayer(r: any): LineupPlayer {
 }
 
 async function scrapeLineupsFromPage(url: string) {
-  const browser = await chromium.launch({
-    headless: true,
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  const browser = await playwright.launch({
+  args: chromium.args,
+  executablePath: await chromium.executablePath(),
+  headless: true,
+});
 
   try {
     const page = await browser.newPage();
