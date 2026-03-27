@@ -4,7 +4,6 @@ import chromium from "@sparticuz/chromium";
 import { chromium as playwright } from "playwright-core";
 
 export const runtime = "nodejs";
-
 export const dynamic = "force-dynamic";
 
 type LineupPlayer = {
@@ -61,16 +60,34 @@ function rowToPlayer(r: any): LineupPlayer {
   };
 }
 
-async function scrapeLineupsFromPage(url: string) {
-  const isProd = process.env.VERCEL === "1";
+async function launchBrowser() {
+  const isVercel = process.env.VERCEL === "1";
 
-  const browser = await playwright.launch({
-    args: chromium.args,
-    executablePath: isProd
-      ? await chromium.executablePath()
-      : undefined,
+  if (isVercel) {
+    const executablePath = await chromium.executablePath();
+
+    if (!executablePath) {
+      throw new Error("Sparticuz Chromium executable not found on Vercel");
+    }
+
+    console.log("Using Vercel Chromium:", executablePath);
+
+    return playwright.launch({
+      args: chromium.args,
+      executablePath,
+      headless: true,
+    });
+  }
+
+  console.log("Using local Playwright browser");
+
+  return playwright.launch({
     headless: true,
   });
+}
+
+async function scrapeLineupsFromPage(url: string) {
+  const browser = await launchBrowser();
 
   try {
     const page = await browser.newPage();
@@ -230,7 +247,7 @@ async function scrapeLineupsFromPage(url: string) {
       away: { starters: awayStarters, bench: awayBench } satisfies TeamLineup,
     };
   } finally {
-    await browser.close();
+    await browser.close().catch(() => {});
   }
 }
 
