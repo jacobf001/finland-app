@@ -62,11 +62,15 @@ function rowToPlayer(r: any): LineupPlayer {
 }
 
 async function scrapeLineupsFromPage(url: string) {
+  const isProd = process.env.VERCEL === "1";
+
   const browser = await playwright.launch({
-  args: chromium.args,
-  executablePath: await chromium.executablePath(),
-  headless: true,
-});
+    args: chromium.args,
+    executablePath: isProd
+      ? await chromium.executablePath()
+      : undefined,
+    headless: true,
+  });
 
   try {
     const page = await browser.newPage();
