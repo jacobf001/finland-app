@@ -862,13 +862,25 @@ async function fetchLineupsFromApi(matchId: string) {
     cache: "no-store",
   });
 
+  const text = await res.text();
+
+  console.log("fetchLineupsFromApi status:", res.status);
+  console.log("fetchLineupsFromApi content-type:", res.headers.get("content-type"));
+  console.log("fetchLineupsFromApi url:", apiUrl);
+  console.log("fetchLineupsFromApi body sample:", text.slice(0, 1000));
+
   if (!res.ok) {
     throw new Error(`Failed to fetch match api (${res.status})`);
   }
 
-  const json = await res.json();
-  const match = json?.match;
+  let json: any;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    throw new Error(`Match API returned non-JSON: ${text.slice(0, 300)}`);
+  }
 
+  const match = json?.match;
   if (!match) {
     throw new Error("Match API returned no match object");
   }
@@ -881,12 +893,8 @@ async function fetchLineupsFromApi(matchId: string) {
   const homeTeamId = match.team_A_id ? String(match.team_A_id) : null;
   const awayTeamId = match.team_B_id ? String(match.team_B_id) : null;
 
-  const homeRows = allLineups.filter(
-    (p: any) => String(p.team_id ?? "") === String(homeTeamId ?? ""),
-  );
-  const awayRows = allLineups.filter(
-    (p: any) => String(p.team_id ?? "") === String(awayTeamId ?? ""),
-  );
+  const homeRows = allLineups.filter((p: any) => String(p.team_id ?? "") === String(homeTeamId ?? ""));
+  const awayRows = allLineups.filter((p: any) => String(p.team_id ?? "") === String(awayTeamId ?? ""));
 
   function toPlayer(p: any, fallbackPrefix: string, i: number): LineupPlayer {
     const firstName = String(p.first_name ?? "").trim();
@@ -930,19 +938,11 @@ async function fetchLineupsFromApi(matchId: string) {
       .map((p: any, i: number) => toPlayer(p, "api-away-bench", i)),
   );
 
-  const teams: TeamsBlock = {
-    home: {
-      spl_team_id: homeTeamId,
-      team_name: match.team_A_name ?? null,
-    },
-    away: {
-      spl_team_id: awayTeamId,
-      team_name: match.team_B_name ?? null,
-    },
-  };
-
   return {
-    teams,
+    teams: {
+      home: { spl_team_id: homeTeamId, team_name: match.team_A_name ?? null },
+      away: { spl_team_id: awayTeamId, team_name: match.team_B_name ?? null },
+    },
     matchMeta: {
       home_score: match.fs_A != null && match.fs_A !== "" ? Number(match.fs_A) : null,
       away_score: match.fs_B != null && match.fs_B !== "" ? Number(match.fs_B) : null,
@@ -961,8 +961,8 @@ async function fetchLineupsFromApi(matchId: string) {
         category_name: match.category_name ?? null,
       },
     },
-    home: { starters: homeStarters, bench: homeBench } satisfies TeamLineup,
-    away: { starters: awayStarters, bench: awayBench } satisfies TeamLineup,
+    home: { starters: homeStarters, bench: homeBench },
+    away: { starters: awayStarters, bench: awayBench },
   };
 }
 
