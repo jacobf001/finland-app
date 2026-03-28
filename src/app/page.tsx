@@ -666,7 +666,7 @@ function PlayerAnalysisTable({
                                   <span className="text-white/30 w-12 shrink-0">{s.season_year ?? "—"}</span>
                                   <span>
                                     {s.team_name ?? "—"}
-                                    {s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}
+                                    {s.club_ctx?.competition_tier ? ` · ${s.club_ctx.competition_name ?? `Tier ${s.club_ctx.competition_tier}`}` : ""}
                                     {s.club_ctx?.position ? ` · Pos ${s.club_ctx.position}` : ""}
                                     {s.minutes ? ` (${s.minutes}m)` : ""}
                                   </span>
@@ -687,7 +687,7 @@ function PlayerAnalysisTable({
                                   <span className="text-white/30 w-12 shrink-0">{ps.season_year ?? "—"}</span>
                                   <span>
                                     {ps.team_name ?? "—"}
-                                    {ps.club_ctx?.competition_tier ? ` · Tier ${ps.club_ctx.competition_tier}` : ""}
+                                    {ps.club_ctx?.competition_tier ? ` · ${ps.club_ctx.competition_name ?? `Tier ${ps.club_ctx.competition_tier}`}` : ""}
                                     {ps.club_ctx?.position ? ` · Pos ${ps.club_ctx.position}` : ""}
                                     {ps.minutes ? ` (${ps.minutes}m)` : ""}
                                   </span>

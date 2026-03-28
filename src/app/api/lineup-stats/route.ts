@@ -171,7 +171,13 @@ function chooseDominantCategory(rows: NormalizedSeasonRow[]): string | null {
 function genderMatches(rowGender: string | null | undefined, wantedGender: string | null | undefined) {
   if (!wantedGender) return true;
   if (!rowGender) return false;
-  return String(rowGender).toLowerCase() === String(wantedGender).toLowerCase();
+  const rg = String(rowGender).toLowerCase();
+  const wg = String(wantedGender).toLowerCase();
+  if (wg === "male") return rg === "male" || rg === "youth_male";
+  if (wg === "female") return rg === "female" || rg === "youth_female";
+  if (wg === "youth_male") return rg === "male" || rg === "youth_male";
+  if (wg === "youth_female") return rg === "female" || rg === "youth_female";
+  return rg === wg;
 }
 
 function pickPreferredRows(
@@ -273,20 +279,13 @@ function isYouthCategory(category: string | null | undefined) {
   if (!category) return false;
   const c = category.toLowerCase();
   return (
-    c.includes("u17") ||
-    c.includes("u-17") ||
-    c.includes("u18") ||
-    c.includes("u-18") ||
-    c.includes("u19") ||
-    c.includes("u-19") ||
-    c.includes("u20") ||
-    c.includes("u-20") ||
-    c.includes("u21") ||
-    c.includes("u-21") ||
-    c.includes("p17") ||
-    c.includes("p18") ||
-    c.includes("p19") ||
-    c.includes("p20") ||
+    c.includes("u17") || c.includes("u-17") ||
+    c.includes("u18") || c.includes("u-18") ||
+    c.includes("u19") || c.includes("u-19") ||
+    c.includes("u20") || c.includes("u-20") ||
+    c.includes("u21") || c.includes("u-21") ||
+    c.includes("p17") || c.includes("p18") ||
+    c.includes("p19") || c.includes("p20") ||
     c.includes("p21")
   );
 }
@@ -453,9 +452,10 @@ function calcImportance(params: {
   return Math.max(0, Math.round(base * 100 * scale));
 }
 
-function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: number, missingImpact = 0) {
+function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: number, missingImpact = 0, isYouthMatch = false) {
   const starterSum = side.starters.reduce((s, p) => s + Number(p.importance ?? 0), 0);
   const benchSum = side.bench.reduce((s, p) => s + Number(p.importance ?? 0), 0);
+  
 
   const presentAvg = side.starters.length > 0 ? starterSum / side.starters.length : 0;
   const expectedTotal = starterSum + missingImpact;
@@ -464,7 +464,7 @@ function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: numbe
 
   const histStrength = Number.isFinite(sideStrength) ? sideStrength : 0.5;
   const lineupGap = Math.max(0, histStrength - avgStarterImp);
-  const lineupWeight = clamp01(0.4 + lineupGap * 0.6);
+  const lineupWeight = clamp01((isYouthMatch ? 0.2 : 0.4) + lineupGap * (isYouthMatch ? 0.3 : 0.6));
   const histWeight = 1 - lineupWeight;
   const historyCap = clamp01(1 - missingRatio * 1.5);
   const cappedHistStrength = histStrength * historyCap;
@@ -474,7 +474,7 @@ function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: numbe
 
   const avgImpRatio = side.starters.length > 0 ? (starterSum / side.starters.length) / 100 : 0;
   const untrackedPenalty = clamp01(1 - avgImpRatio * 8);
-  const effectiveStrength = rawEffectiveWithFloor * (1 - untrackedPenalty * 0.7);
+  const effectiveStrength = rawEffectiveWithFloor * (1 - untrackedPenalty * (isYouthMatch ? 0.3 : 0.7));
 
   const raw = starterSum + benchSum * 0.35;
   const scaled = raw * (0.85 + 0.3 * effectiveStrength);
@@ -705,6 +705,13 @@ function maxGamesForTier(tier: number, isYouthComp: boolean, women: boolean): nu
 }
 
 function tierBaseCeiling(tier: number, isYouth: boolean, women: boolean): number {
+  if (isYouth) {
+    // Youth ceiling is half the senior ceiling at that tier
+    if (tier <= 2) return 50;
+    if (tier === 3) return 36;
+    if (tier === 4) return 28;
+    return 22;
+  }
   if (women && tier >= 3) return 22;
   if (tier <= 1) return 92;
   if (tier === 2) return 78;
@@ -754,7 +761,9 @@ function calcWeightedImportance(playerRows: NormalizedSeasonRow[], seasonYearCtx
         : (fallbackTier ?? 99);
 
     const isYouth = isYouthCategory(row.competition_category);
-    const youthDiscount = isYouth ? 0.35 : 1.0;
+    const youthDiscount = isYouth 
+      ? (row.competition_category?.toLowerCase().includes("p20") || row.competition_category?.toLowerCase().includes("p21") ? 0.6 : 0.35)
+      : 1.0;
     const wmins = Number(row.minutes ?? 0) * youthDiscount;
 
     totalMins += Number(row.minutes ?? 0) * youthDiscount;
@@ -1282,8 +1291,8 @@ export async function GET(req: Request) {
       const playerRows = allRowsByPlayer.get(String(p.spl_player_id)) ?? [];
       const prevPlayerRows = allPrevRowsByPlayer.get(String(p.spl_player_id)) ?? [];
 
-      const chosenRows = pickPreferredRows(playerRows, sideTeamId, sideCategoryKey, matchGender);
-      const prevChosenRows = pickPreferredRows(prevPlayerRows, sideTeamId, sideCategoryKey, matchGender);
+      const chosenRows = pickPreferredRows(playerRows, null, null, matchGender);
+      const prevChosenRows = pickPreferredRows(prevPlayerRows, null, null, matchGender);
 
       const currResult = chosenRows.length > 0 ? calcWeightedImportance(chosenRows, seasonYear) : null;
       const prevResult = prevChosenRows.length > 0 ? calcWeightedImportance(prevChosenRows, prevSeasonYear) : null;
@@ -1347,45 +1356,55 @@ export async function GET(req: Request) {
         }
       }
 
-      const seasons = chosenRows.slice(0, 3).map((sr) => {
-        const sTeamId = sr.spl_team_id ? String(sr.spl_team_id) : null;
-        return {
-          season_year: seasonYear,
-          spl_team_id: sTeamId,
-          team_name: sr.team_name ?? (sTeamId ? teamNameById.get(sTeamId) ?? null : null),
-          player_name: sr.player_name ?? p.name,
-          matches_played: Number(sr.matches_played ?? 0),
-          starts: Number(sr.starts ?? 0),
-          minutes: Number(sr.minutes ?? 0),
-          goals: Number(sr.goals ?? 0),
-          yellows: Number(sr.yellows ?? 0),
-          reds: Number(sr.reds ?? 0),
-          club_ctx: {
-            competition_tier: sr.competition_tier,
-            competition_category: sr.competition_category,
-          },
-        };
-      });
+      const seasons = playerRows
+        .filter((r) => Number(r.competition_tier ?? 99) < 99)
+        .sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0))
+        .slice(0, 5)
+        .map((sr) => {
+          const sTeamId = sr.spl_team_id ? String(sr.spl_team_id) : null;
+          return {
+            season_year: seasonYear,
+            spl_team_id: sTeamId,
+            team_name: sr.team_name ?? (sTeamId ? teamNameById.get(sTeamId) ?? null : null),
+            player_name: sr.player_name ?? p.name,
+            matches_played: Number(sr.matches_played ?? 0),
+            starts: Number(sr.starts ?? 0),
+            minutes: Number(sr.minutes ?? 0),
+            goals: Number(sr.goals ?? 0),
+            yellows: Number(sr.yellows ?? 0),
+            reds: Number(sr.reds ?? 0),
+            club_ctx: {
+              competition_tier: sr.competition_tier,
+              competition_category: sr.competition_category,
+              competition_name: sr.competition_category,
+            },
+          };
+        });
 
-      const prevSeasons = prevChosenRows.slice(0, 3).map((pr) => {
-        const prevTeamId = pr.spl_team_id ? String(pr.spl_team_id) : null;
-        return {
-          season_year: prevSeasonYear,
-          spl_team_id: prevTeamId,
-          team_name: pr.team_name ?? (prevTeamId ? teamNameById.get(prevTeamId) ?? null : null),
-          player_name: pr.player_name ?? p.name,
-          matches_played: Number(pr.matches_played ?? 0),
-          starts: Number(pr.starts ?? 0),
-          minutes: Number(pr.minutes ?? 0),
-          goals: Number(pr.goals ?? 0),
-          yellows: Number(pr.yellows ?? 0),
-          reds: Number(pr.reds ?? 0),
-          club_ctx: {
-            competition_tier: pr.competition_tier,
-            competition_category: pr.competition_category,
-          },
-        };
-      });
+      const prevSeasons = prevPlayerRows
+        .filter((r) => Number(r.competition_tier ?? 99) < 99)
+        .sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0))
+        .slice(0, 5)
+        .map((pr) => {
+          const prevTeamId = pr.spl_team_id ? String(pr.spl_team_id) : null;
+          return {
+            season_year: prevSeasonYear,
+            spl_team_id: prevTeamId,
+            team_name: pr.team_name ?? (prevTeamId ? teamNameById.get(prevTeamId) ?? null : null),
+            player_name: pr.player_name ?? p.name,
+            matches_played: Number(pr.matches_played ?? 0),
+            starts: Number(pr.starts ?? 0),
+            minutes: Number(pr.minutes ?? 0),
+            goals: Number(pr.goals ?? 0),
+            yellows: Number(pr.yellows ?? 0),
+            reds: Number(pr.reds ?? 0),
+            club_ctx: {
+              competition_tier: pr.competition_tier,
+              competition_category: pr.competition_category,
+              competition_name: pr.competition_category,
+            },
+          };
+        });
 
       return {
         ...p,
@@ -1544,8 +1563,9 @@ export async function GET(req: Request) {
       buildMissingLikelyXI("away"),
     ]);
 
-    const homeRating = sideRating(home, homeStrength, homeMissing.missingImpact);
-    const awayRating = sideRating(away, awayStrength, awayMissing.missingImpact);
+    const isYouthMatch = matchCategoryKey?.startsWith("u") || matchCategoryKey?.includes("p20") || matchCategoryKey?.includes("p21") || false;
+    const homeRating = sideRating(home, homeStrength, homeMissing.missingImpact, isYouthMatch);
+    const awayRating = sideRating(away, awayStrength, awayMissing.missingImpact, isYouthMatch);
 
     const homeOverall = computeOverall({
       teamStrength: homeRating.effectiveStrength,
@@ -1565,15 +1585,21 @@ export async function GET(req: Request) {
       women: isWomen,
     });
 
+    const homeMissingImpactForOdds = isYouthMatch ? 0 : homeMissing.missingImpact;
+    const awayMissingImpactForOdds = isYouthMatch ? 0 : awayMissing.missingImpact;
+
+    const homeRawStrength = isYouthMatch ? homeStrength : homeRating.effectiveStrength;
+    const awayRawStrength = isYouthMatch ? awayStrength : awayRating.effectiveStrength;
+
     const pricing = computeOdds({
       homeTier,
       awayTier,
-      homeRawStrength: homeRating.effectiveStrength,
-      awayRawStrength: awayRating.effectiveStrength,
-      homeMissingImpact: homeMissing.missingImpact,
-      awayMissingImpact: awayMissing.missingImpact,
+      homeRawStrength: homeRawStrength,
+      awayRawStrength: awayRawStrength,
+      homeMissingImpact: homeMissingImpactForOdds,
+      awayMissingImpact: awayMissingImpactForOdds,
     });
-
+      
     function missingGoalsPerGame(missing: any[], tier: number | null): number {
       const t = Number.isFinite(Number(tier)) ? Number(tier) : 3;
       const maxG = t <= 3 ? 22 : t === 4 ? 18 : 14;
