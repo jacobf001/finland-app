@@ -4,6 +4,9 @@ import { supabaseAdmin } from "@/lib/supabaseServer";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+console.log("SUPABASE_URL", process.env.NEXT_PUBLIC_SUPABASE_URL?.slice(0, 20));
+console.log("KEY", process.env.SUPABASE_SERVICE_ROLE_KEY?.slice(0, 10));
+
 type LineupPlayer = {
   spl_player_id: string;
   name: string;
@@ -189,6 +192,10 @@ async function fetchLineupsFromApi(matchId: string) {
 }
 
 export async function GET(req: Request) {
+  console.log("ENV CHECK", {
+    url: process.env.NEXT_PUBLIC_SUPABASE_URL?.slice(0, 30),
+    key: process.env.SUPABASE_SERVICE_ROLE_KEY?.slice(0, 10),
+  });
   try {
     const { searchParams } = new URL(req.url);
     const inputUrl = searchParams.get("url") ?? "";
