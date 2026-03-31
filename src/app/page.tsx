@@ -269,11 +269,24 @@ function ModelCard({ analysis }: { analysis: any }) {
   const p = analysis.probabilities;
   const odds = analysis.odds;
   const goals = analysis.goals;
+  const [marketOdds, setMarketOdds] = useState({ home: "", draw: "", away: "" });
 
   const homeStrength = analysis.teamStrengthDebug?.home?.strength ?? analysis.teamStrength?.home ?? 0;
   const awayStrength = analysis.teamStrengthDebug?.away?.strength ?? analysis.teamStrength?.away ?? 0;
   const homeName = analysis.teams?.home?.team_name ?? "Home";
   const awayName = analysis.teams?.away?.team_name ?? "Away";
+
+  function calcEdge(marketOdd: string, modelProb: number) {
+    const mo = Number(marketOdd);
+    if (!mo || mo <= 1 || !modelProb) return null;
+    const fairOdd = 1 / modelProb;
+    const edge = (mo / fairOdd - 1) * 100;
+    return { fairOdd, edge, value: edge >= 5 };
+  }
+
+  const homeEdge = calcEdge(marketOdds.home, p?.home);
+  const drawEdge = calcEdge(marketOdds.draw, p?.draw);
+  const awayEdge = calcEdge(marketOdds.away, p?.away);
 
   return (
     <div className="rounded-2xl border border-white/8 bg-white/3 p-6">
@@ -319,6 +332,42 @@ function ModelCard({ analysis }: { analysis: any }) {
               <span className="text-white/40">A</span>{" "}
               <span className="text-orange-300">{odds.away?.toFixed(2)}</span>
             </span>
+          </div>
+        </div>
+      )}
+
+      {p && (
+        <div className="mt-4 pb-4 border-b border-white/5">
+          <div className="text-xs text-white/30 font-mono uppercase tracking-wider mb-3">
+            Market odds
+          </div>
+          <div className="flex gap-3">
+            {[
+              { label: "H", key: "home" as const, prob: p.home, edge: homeEdge, nameColor: "text-blue-300" },
+              { label: "D", key: "draw" as const, prob: p.draw, edge: drawEdge, nameColor: "text-white/50" },
+              { label: "A", key: "away" as const, prob: p.away, edge: awayEdge, nameColor: "text-orange-300" },
+            ].map(({ label, key, prob, edge, nameColor }) => (
+              <div key={key} className="flex-1">
+                <div className={`text-xs font-mono mb-1.5 ${nameColor}`}>
+                  {label} <span className="text-white/30">fair {(1 / prob).toFixed(2)}</span>
+                </div>
+                <input
+                  className="w-full rounded-lg border border-white/10 bg-black/60 px-2 py-1.5 text-sm font-mono focus:border-white/30 focus:outline-none"
+                  placeholder="2.10"
+                  value={marketOdds[key]}
+                  onChange={(e) => setMarketOdds(prev => ({ ...prev, [key]: e.target.value }))}
+                />
+                {edge && (
+                  <div className={clsx(
+                    "mt-1.5 text-xs font-mono font-semibold",
+                    edge.value ? "text-teal-400" : edge.edge > 0 ? "text-white/40" : "text-red-400/60"
+                  )}>
+                    {edge.edge >= 0 ? "+" : ""}{edge.edge.toFixed(1)}%
+                    {edge.value && <span className="ml-1">✓ VALUE</span>}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}
@@ -398,7 +447,7 @@ function ModelCard({ analysis }: { analysis: any }) {
                 <span className={`text-xs font-mono font-semibold px-1.5 py-0.5 rounded border ${tierColor}`}>
                   {tierLabel}
                 </span>
-                <span className="text-xs font-mono text-teal/50">
+                <span className="text-xs font-mono text-white/50">
                   {str}
                   <span className="text-white/20">/100</span>
                 </span>
