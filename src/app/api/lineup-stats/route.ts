@@ -647,7 +647,7 @@ function computeOdds(params: {
   const pAwayRaw = 1 - pHomeRaw;
 
   const gap = Math.abs(z);
-  const pDraw = clamp(0.26 - 0.07 * gap, 0.08, 0.28);
+  const pDraw = clamp(0.22 - 0.07 * gap, 0.07, 0.24);
 
   const pHome = (1 - pDraw) * pHomeRaw;
   const pAway = (1 - pDraw) * pAwayRaw;
@@ -933,6 +933,22 @@ async function getLikelyXI(teamId: string, seasonYear: number, matchGender: stri
   }
 
   return out;
+}
+
+function dominantPlayerTier(starters: any[]): number | null {
+  const tierCounts = new Map<number, number>();
+  for (const p of starters) {
+    const tier = p.season?.club_ctx?.competition_tier;
+    if (tier && tier < 90) {
+      tierCounts.set(tier, (tierCounts.get(tier) ?? 0) + (p.importance ?? 0));
+    }
+  }
+  let bestTier: number | null = null;
+  let bestScore = -1;
+  for (const [tier, score] of tierCounts.entries()) {
+    if (score > bestScore) { bestScore = score; bestTier = tier; }
+  }
+  return bestTier;
 }
 
 export async function GET(req: Request) {
@@ -1634,6 +1650,8 @@ export async function GET(req: Request) {
     const isYouthMatch = matchCategoryKey?.startsWith("u") || matchCategoryKey?.includes("p20") || matchCategoryKey?.includes("p21") || false;
     const homeRating = sideRating(home, homeStrength, homeMissing.missingImpact, isYouthMatch, homeStrength);
     const awayRating = sideRating(away, awayStrength, awayMissing.missingImpact, isYouthMatch, awayStrength);
+    const homeEffectiveTier = dominantPlayerTier(home.starters) ?? homeTier;
+    const awayEffectiveTier = dominantPlayerTier(away.starters) ?? awayTier;
 
 
     const homeOverall = computeOverall({
@@ -1661,8 +1679,8 @@ export async function GET(req: Request) {
     const awayRawStrength = isYouthMatch ? awayStrength : awayRating.effectiveStrength;
 
     const pricing = computeOdds({
-      homeTier,
-      awayTier,
+      homeTier: homeEffectiveTier,  // was homeTier
+      awayTier: awayEffectiveTier,  // was awayTier
       homeRawStrength: homeRawStrength,
       awayRawStrength: awayRawStrength,
       homeMissingImpact: homeMissingImpactForOdds,
