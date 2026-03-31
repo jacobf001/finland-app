@@ -349,8 +349,8 @@ function ModelCard({ analysis }: { analysis: any }) {
               const pctNum = Math.round(prob * 100);
               const isFav = prob >= 0.55;
               const isLong = prob < 0.30;
-              const textColor = isFav ? "text-emerald-400" : isLong ? "text-white/40" : "text-white/70";
-              const bgColor = isFav ? "bg-emerald-950/30 border-emerald-500/15" : "bg-white/3 border-white/6";
+              const textColor = isFav ? "text-teal-400" : isLong ? "text-white/40" : "text-white/70";
+              const bgColor = isFav ? "bg-teal-950/30 border-teal-500/15" : "bg-white/3 border-white/6";
 
               return (
                 <div key={label} className={`rounded-lg border px-3 py-2 ${bgColor}`}>
@@ -398,7 +398,7 @@ function ModelCard({ analysis }: { analysis: any }) {
                 <span className={`text-xs font-mono font-semibold px-1.5 py-0.5 rounded border ${tierColor}`}>
                   {tierLabel}
                 </span>
-                <span className="text-xs font-mono text-white/50">
+                <span className="text-xs font-mono text-teal/50">
                   {str}
                   <span className="text-white/20">/100</span>
                 </span>
@@ -437,9 +437,9 @@ function MissingLikelyXI({
 
   function impactColor(imp: number, ceiling: number): string {
     const ratio = ceiling > 0 ? imp / ceiling : 0;
-    if (ratio >= 0.8) return "text-emerald-400";
-    if (ratio >= 0.6) return "text-green-400";
-    if (ratio >= 0.4) return "text-yellow-400";
+    if (ratio >= 0.80) return "text-emerald-400";
+    if (ratio >= 0.60) return "text-sky-400";
+    if (ratio >= 0.40) return "text-yellow-400";
     return "text-white/35";
   }
 
@@ -576,23 +576,23 @@ function PlayerAnalysisTable({
                 const ceiling = p.importanceCeiling ?? 100;
                 const impRatio = ceiling > 0 ? imp / ceiling : 0;
                 const impColor =
-                  imp < 30
+                  imp === 0
                     ? "text-white/30"
                     : impRatio >= 0.8
                       ? "text-emerald-400"
                       : impRatio >= 0.6
-                        ? "text-green-400"
+                        ? "text-sky-400"
                         : impRatio >= 0.4
                           ? "text-yellow-400"
-                          : "text-white/70";
+                          : "text-white/50";
 
                 const rowHighlight =
-                  imp < 30
+                  imp === 0
                     ? ""
                     : impRatio >= 0.8
                       ? "border-l-2 border-l-emerald-500 bg-emerald-950/20"
                       : impRatio >= 0.6
-                        ? "border-l-2 border-l-green-500/40 bg-green-950/10"
+                        ? "border-l-2 border-l-sky-500/40 bg-sky-950/10"
                         : impRatio >= 0.4
                           ? "border-l-2 border-l-yellow-500/50 bg-yellow-950/10"
                           : "";
@@ -728,7 +728,7 @@ function FormDots({
 
   const mins = recent5.lastNMinutes;
   const percent = Math.min(100, Math.round((mins / 450) * 100));
-  const color = percent >= 70 ? "bg-emerald-500" : percent >= 40 ? "bg-yellow-500" : "bg-white/20";
+  const color = percent >= 70 ? "bg-teal-500" : percent >= 40 ? "bg-yellow-500" : "bg-white/20";
 
   return (
     <div className="flex items-center gap-1.5 justify-end">
