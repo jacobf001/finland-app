@@ -452,45 +452,50 @@ function calcImportance(params: {
   return Math.max(0, Math.round(base * 100 * scale));
 }
 
-function sideRating(side, sideStrength, missingImpact = 0, isYouthMatch = false, historicalStrength = sideStrength) {
-// historicalStrength = blended team strength before lineup adjustment (used for floor)
-
+function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: number, missingImpact = 0, isYouthMatch = false, historicalStrength = sideStrength) {
   const starterSum = side.starters.reduce((s, p) => s + Number(p.importance ?? 0), 0);
   const benchSum = side.bench.reduce((s, p) => s + Number(p.importance ?? 0), 0);
-  
 
   const presentAvg = side.starters.length > 0 ? starterSum / side.starters.length : 0;
   const expectedTotal = starterSum + missingImpact;
   const missingRatio = expectedTotal > 0 ? clamp01(missingImpact / expectedTotal) : 0;
   const avgStarterImp = clamp01((presentAvg / 100) * (1 - missingRatio));
-
   const histStrength = Number.isFinite(sideStrength) ? sideStrength : 0.5;
   const lineupGap = Math.max(0, histStrength - avgStarterImp);
   const lineupWeight = clamp01((isYouthMatch ? 0.2 : 0.4) + lineupGap * (isYouthMatch ? 0.3 : 0.6));
   const histWeight = 1 - lineupWeight;
-  const historyCap = clamp01(1 - missingRatio * 0.8);
+  const historyCap = clamp01(1 - missingRatio * 0.8);  // was 1.5
   const cappedHistStrength = histStrength * historyCap;
   const rawEffective = clamp01(cappedHistStrength * histWeight + avgStarterImp * lineupWeight);
-  const tierFloor = histStrength * 0.4 * Math.min(1, avgStarterImp / Math.max(histStrength, 0.01));
+  const tierFloor = histStrength * 0.40 * Math.min(1, avgStarterImp / Math.max(histStrength, 0.01));
   const rawEffectiveWithFloor = Math.max(rawEffective, tierFloor);
 
-  const avgCeiling = side.starters.length > 0 
-    ? side.starters.reduce((s, p) => s + (p.importanceCeiling ?? 100), 0) / side.starters.length 
+  const avgCeiling = side.starters.length > 0
+    ? side.starters.reduce((s, p) => s + (p.importanceCeiling ?? 100), 0) / side.starters.length
     : 100;
-  const avgImpRatio = side.starters.length > 0 ? (starterSum / side.starters.length) / avgCeiling : 0;
 
+  const avgImpRatio = side.starters.length > 0 ? (starterSum / side.starters.length) / avgCeiling : 0;
   const untrackedPenalty = clamp01(1 - avgImpRatio * 8);
-  const effectiveStrength = rawEffectiveWithFloor * (1 - untrackedPenalty * (isYouthMatch ? 0.3 : 0.7));
+
+  const topPlayerRatios = side.starters
+    .map(p => (p.importanceCeiling ?? 100) > 0 ? (p.importance ?? 0) / (p.importanceCeiling ?? 100) : 0)
+    .sort((a, b) => b - a)
+    .slice(0, 2);
+
+  const peakBonus = topPlayerRatios.length > 0
+    ? topPlayerRatios.reduce((s, r) => s + r, 0) / topPlayerRatios.length * 0.08
+    : 0;
+
+  const effectiveStrength = rawEffectiveWithFloor * (1 - untrackedPenalty * (isYouthMatch ? 0.3 : 0.7)) + peakBonus;
 
   const raw = starterSum + benchSum * 0.35;
-  const scaled = raw * (0.85 + 0.3 * effectiveStrength);
+  const scaled = raw * (0.85 + 0.30 * effectiveStrength);
   const startersKnown = side.starters.filter((p) => p.season != null).length;
   const coverage = side.starters.length ? startersKnown / side.starters.length : 0;
-  // Never let effective strength drop below a meaningful floor tied to historical strength.
-  // Without this, a strong team with many missing players collapses to ~0 effective strength,
-  // causing it to look weaker than a low-tier team with a full squad.
-  const historicalFloor = sideStrength * 0.55;
+
+  const historicalFloor = historicalStrength * 0.55;
   const effectiveStrengthFloored = Math.max(effectiveStrength, historicalFloor);
+
   return {
     starters: Math.round(starterSum),
     bench: Math.round(benchSum),
@@ -498,17 +503,6 @@ function sideRating(side, sideStrength, missingImpact = 0, isYouthMatch = false,
     total: Math.round(scaled),
     coverage,
     effectiveStrength: effectiveStrengthFloored,
-    // debug
-    debug: {
-      avgImpRatio,
-      untrackedPenalty,
-      rawEffective,
-      rawEffectiveWithFloor,
-      effectiveStrength,
-      historicalFloor,
-      missingRatio,
-      avgStarterImp,
-    }
   };
 }
 
@@ -664,12 +658,21 @@ function computeOdds(params: {
 }
 
 const TIER_GOAL_BASELINES: Record<number, [number, number]> = {
-  1: [1.72, 1.38],
-  2: [1.85, 1.52],
-  3: [2.1, 1.72],
-  4: [2.25, 1.85],
-  5: [2.5, 2.1],
-  6: [2.7, 2.25],
+  1: [2.13, 2.06],  // Veikkausliiga
+  2: [2.17, 2.08],  // Ykkönen (avg of variants)
+  3: [2.15, 2.07],  // Miesten Kakkonen
+  4: [2.63, 2.26],  // Miesten Kolmonen
+  5: [2.60, 2.26],  // Miesten Nelonen/Seiska avg
+  6: [2.62, 2.26],  // Miesten Vitonen
+  7: [2.64, 2.27],  // Miesten Kutonen
+};
+
+const TIER_GOAL_BASELINES_WOMEN: Record<number, [number, number]> = {
+  1: [2.17, 2.07],  // Kansallinen Liiga avg
+  2: [2.15, 2.12],  // Kansallinen Ykkönen avg
+  3: [2.14, 2.06],  // Naisten Kakkonen
+  4: [2.69, 2.27],  // Naisten Kolmonen
+  5: [2.57, 2.26],  // Naisten Nelonen
 };
 
 function poissonPmf(lambda: number, k: number): number {
@@ -686,22 +689,24 @@ function computeGoals(params: {
   awayStrength: number;
   homeMissingGoals: number;
   awayMissingGoals: number;
+  women?: boolean;
 }) {
+  const baselines = params.women ? TIER_GOAL_BASELINES_WOMEN : TIER_GOAL_BASELINES;
   const homeTier = Number.isFinite(Number(params.homeTier)) ? Number(params.homeTier) : 3;
   const awayTier = Number.isFinite(Number(params.awayTier)) ? Number(params.awayTier) : 3;
 
-  const homeBaseline = TIER_GOAL_BASELINES[homeTier] ?? TIER_GOAL_BASELINES[3];
-  const awayBaseline = TIER_GOAL_BASELINES[awayTier] ?? TIER_GOAL_BASELINES[3];
+  const homeBaseline = baselines[homeTier] ?? baselines[3];
+  const awayBaseline = baselines[awayTier] ?? baselines[3];
   let baseHome = homeBaseline[0];
   let baseAway = awayBaseline[1];
 
   const awayTierAdv = Math.max(0, homeTier - awayTier);
   const homeTierAdv = Math.max(0, awayTier - homeTier);
 
-  const awayBaselineHome = (TIER_GOAL_BASELINES[awayTier] ?? TIER_GOAL_BASELINES[3])[0];
+  const awayBaselineHome = (baselines[awayTier] ?? baselines[3])[0];
   baseAway = baseAway + (awayBaselineHome - baseAway) * clamp(awayTierAdv * 0.25, 0, 0.75);
 
-  const homeBaselineAway = (TIER_GOAL_BASELINES[homeTier] ?? TIER_GOAL_BASELINES[3])[1];
+  const homeBaselineAway = (baselines[homeTier] ?? baselines[3])[1];
   baseHome = baseHome + (homeBaselineAway - baseHome) * clamp(homeTierAdv * 0.25, 0, 0.75);
 
   const TIER_AVG: Record<number, number> = { 1: 0.42, 2: 0.28, 3: 0.18, 4: 0.12, 5: 0.07, 6: 0.04 };
@@ -717,8 +722,12 @@ function computeGoals(params: {
   homeXG = homeXG * clamp(1 - Math.max(0, homeTier - awayTier) * 0.2, 0.3, 1.0);
   awayXG = awayXG * clamp(1 - Math.max(0, awayTier - homeTier) * 0.2, 0.3, 1.0);
 
-  const homeMissingCap = clamp(0.2 - homeTierAdv * 0.04, 0.05, 0.2);
-  const awayMissingCap = clamp(0.2 - awayTierAdv * 0.04, 0.05, 0.2);
+  const tierMissingScale = params.women
+    ? clamp(1 - (homeTier + awayTier) / 2 * 0.15, 0.2, 0.6)
+    : clamp(1 - (homeTier + awayTier) / 2 * 0.08, 0.4, 1.0);
+
+  const homeMissingCap = clamp((0.2 - homeTierAdv * 0.04) * tierMissingScale, 0.02, 0.2);
+  const awayMissingCap = clamp((0.2 - awayTierAdv * 0.04) * tierMissingScale, 0.02, 0.2);
 
   homeXG = homeXG * (1 - clamp(params.homeMissingGoals / Math.max(0.01, baseHome * 2), 0, homeMissingCap));
   awayXG = awayXG * (1 - clamp(params.awayMissingGoals / Math.max(0.01, baseAway * 2), 0, awayMissingCap));
@@ -1705,6 +1714,7 @@ export async function GET(req: Request) {
       awayStrength,
       homeMissingGoals: missingGoalsPerGame(homeMissing.missing, homeTier),
       awayMissingGoals: missingGoalsPerGame(awayMissing.missing, awayTier),
+      women: isWomen,
     });
 
     return NextResponse.json({
@@ -1719,39 +1729,36 @@ export async function GET(req: Request) {
       home: {
         ...home,
         rating: homeRating,
-        ratingDebug: homeRating.debug,
         missingLikelyXI: homeMissing.missing,
         missingImpact: homeMissing.missingImpact,
       },
       away: {
         ...away,
-          rating: awayRating,
-          ratingDebug: awayRating.debug,
-          missingLikelyXI: awayMissing.missing,
-          missingImpact: awayMissing.missingImpact,
+        rating: awayRating,
+        missingLikelyXI: awayMissing.missing,
+        missingImpact: awayMissing.missingImpact,
       },
       model_version: "v3_finland_computed_table",
-
-        debug: {
-          oddsInputs: {
-            homeTier,
-            awayTier,
-            homeStrengthRaw: homeStrength,
-            awayStrengthRaw: awayStrength,
-            homeEffectiveStrength: homeRating.effectiveStrength,
-            awayEffectiveStrength: awayRating.effectiveStrength,
-            homeLineupTotal: homeRating.total,
-            awayLineupTotal: awayRating.total,
-            homeCoverage: homeRating.coverage,
-            awayCoverage: awayRating.coverage,
-            homeMissingImpact: homeMissing.missingImpact,
-            awayMissingImpact: awayMissing.missingImpact,
-            homeOverall,
-            awayOverall,
-            awayLawayLineupRatio: awayRating.total / (awayTier === 3 ? 300 : awayTier === 4 ? 220 : 160),
-            depletionTriggered: (awayRating.total / (awayTier === 3 ? 300 : awayTier === 4 ? 220 : 160)) < 0.6,
-          },
-        }
+      debug: {
+        oddsInputs: {
+          homeTier,
+          awayTier,
+          homeStrengthRaw: homeStrength,
+          awayStrengthRaw: awayStrength,
+          homeEffectiveStrength: homeRating.effectiveStrength,
+          awayEffectiveStrength: awayRating.effectiveStrength,
+          homeLineupTotal: homeRating.total,
+          awayLineupTotal: awayRating.total,
+          homeCoverage: homeRating.coverage,
+          awayCoverage: awayRating.coverage,
+          homeMissingImpact: homeMissing.missingImpact,
+          awayMissingImpact: awayMissing.missingImpact,
+          homeOverall,
+          awayOverall,
+          awayLineupRatio: awayRating.total / (awayTier === 3 ? 300 : awayTier === 4 ? 220 : 160),
+          depletionTriggered: (awayRating.total / (awayTier === 3 ? 300 : awayTier === 4 ? 220 : 160)) < 0.6,
+        },
+      },
     });
   } catch (e: any) {
     console.error("lineup-stats error:", e);
