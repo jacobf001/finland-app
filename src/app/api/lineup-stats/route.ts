@@ -493,7 +493,8 @@ function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: numbe
   const startersKnown = side.starters.filter((p) => p.season != null).length;
   const coverage = side.starters.length ? startersKnown / side.starters.length : 0;
 
-  const historicalFloor = historicalStrength * 0.55;
+  const missingFloorScale = clamp01(1 - missingRatio * 1.5);
+  const historicalFloor = sideStrength * 0.55 * missingFloorScale;
   const effectiveStrengthFloored = Math.max(effectiveStrength, historicalFloor);
 
   return {
@@ -557,8 +558,11 @@ function computeOdds(params: {
   homePosition: number | null;
   awayPosition: number | null;
   homePlayed: number;
-  homeLineupTotal: number;  // ADD
-  awayLineupTotal: number;  // ADD
+  homeLineupTotal: number;
+  awayLineupTotal: number;
+  homeMissingGoals: number;  // ADD
+  awayMissingGoals: number;  // ADD
+
 }) {
 
   const homeTier = Number.isFinite(Number(params.homeTier)) ? Number(params.homeTier) : 6;
@@ -592,19 +596,11 @@ function computeOdds(params: {
   const lineupZ = (homeLineupRatio - awayLineupRatio) * lineupMultiplier;
 
   const MISSING_CEILINGS: Record<number, number> = { 1: 92, 2: 78, 3: 64, 4: 50, 5: 36 };
-  const homeMissingNorm = clamp(
-    params.homeMissingImpact / ((MISSING_CEILINGS[homeTier] ?? 64) * 4),
-    0,
-    1,
-  );
-  const awayMissingNorm = clamp(
-    params.awayMissingImpact / ((MISSING_CEILINGS[awayTier] ?? 64) * 4),
-    0,
-    1,
-  );
-
-  const missingCap = clamp(1.0 - tierGapForStrength * 0.25, 0.1, 1.0);
-  const missingAdj = (awayMissingNorm - homeMissingNorm) * 0.9 * missingCap;
+  // replace missingAdj calculation entirely:
+  const homeMissingNorm = params.homeMissingImpact / ((MISSING_CEILINGS[homeTier] ?? 64) * 4);
+  const awayMissingNorm = params.awayMissingImpact / ((MISSING_CEILINGS[awayTier] ?? 64) * 4);
+  const missingDiff = awayMissingNorm - homeMissingNorm;
+  const missingAdj = clamp(missingDiff * 2.0, -2.0, 2.0);
 
   const tierAdvRaw = clamp(
     (awayTier - homeTier) * 1.0 +
@@ -635,7 +631,11 @@ function computeOdds(params: {
   const tierPosWeight = clamp(1 - (Math.min(homeTier, awayTier) - 1) * 0.2, 0.2, 1.0);
   const posZ = clamp(posGap * 0.3, -2.0, 2.0) * posWeight * tierPosWeight;
 
-  const z = strengthZ + lineupZ + missingAdj + tierAdv + homeAdv + posZ;
+  const homeMissingGoalsZ = clamp(params.homeMissingGoals * 0.8, 0, 2.0);
+  const awayMissingGoalsZ = clamp(params.awayMissingGoals * 0.8, 0, 2.0);
+  const missingGoalsAdj = awayMissingGoalsZ - homeMissingGoalsZ;
+
+  const z = strengthZ + lineupZ + missingAdj + missingGoalsAdj + tierAdv + homeAdv + posZ;
 
   const pHomeRaw = sigmoid(z);
   const pAwayRaw = 1 - pHomeRaw;
@@ -813,7 +813,12 @@ function fallbackTierFromCategory(category: string | null | undefined): number |
   return null;
 }
 
-function calcWeightedImportance(playerRows: NormalizedSeasonRow[], seasonYearCtx: number) {
+function calcWeightedImportance(
+  playerRows: NormalizedSeasonRow[],
+  seasonYearCtx: number,
+  birthYear?: number | null,
+) {
+
   let totalMins = 0;
   let totalStarts = 0;
   let totalGoals = 0;
@@ -875,10 +880,15 @@ function calcWeightedImportance(playerRows: NormalizedSeasonRow[], seasonYearCtx
   const maxGames = primaryTier < 99 ? maxGamesForTier(primaryTier, isPrimaryYouth, women) : women ? 18 : 22;
   const importanceCeiling = primaryTier < 99 ? tierBaseCeiling(primaryTier, isPrimaryYouth, women) : women ? 22 : 64;
 
+  // Discount very young players (under 18) playing in senior competitions
+  const playerAge = birthYear ? seasonYearCtx - birthYear : 99;
+  const isVeryYoung = playerAge < 18;
+  const youthPlayerDiscount = isVeryYoung ? 0.5 : 1.0;
+
   const rawImportance = calcImportance({
-    minutes: totalMins,
-    starts: totalStarts,
-    goals: totalGoals,
+    minutes: totalMins * youthPlayerDiscount,
+    starts: totalStarts * youthPlayerDiscount,
+    goals: totalGoals * youthPlayerDiscount,
     yellows: totalYellows,
     reds: totalReds,
     maxGames,
@@ -1387,8 +1397,13 @@ export async function GET(req: Request) {
       const chosenRows = pickPreferredRows(playerRows, null, null, matchGender);
       const prevChosenRows = pickPreferredRows(prevPlayerRows, null, null, matchGender);
 
-      const currResult = chosenRows.length > 0 ? calcWeightedImportance(chosenRows, seasonYear) : null;
-      const prevResult = prevChosenRows.length > 0 ? calcWeightedImportance(prevChosenRows, prevSeasonYear) : null;
+      const playerBirthYear = birthYearById.get(String(p.spl_player_id)) ?? null;
+      const currResult = chosenRows.length > 0 
+        ? calcWeightedImportance(chosenRows, seasonYear, playerBirthYear) 
+        : null;
+      const prevResult = prevChosenRows.length > 0 
+        ? calcWeightedImportance(prevChosenRows, prevSeasonYear, playerBirthYear) 
+        : null;
 
       let importance = 0;
       let importanceCeiling = currResult?.ceiling ?? prevResult?.ceiling ?? 100;
@@ -1688,8 +1703,8 @@ export async function GET(req: Request) {
     const awayRawStrength = isYouthMatch ? awayStrength : awayRating.effectiveStrength;
 
     const pricing = computeOdds({
-      homeTier: homeEffectiveTier,  // was homeTier
-      awayTier: awayEffectiveTier,  // was awayTier
+      homeTier: homeEffectiveTier,
+      awayTier: awayEffectiveTier,
       homeRawStrength: homeRawStrength,
       awayRawStrength: awayRawStrength,
       homeMissingImpact: homeMissingImpactForOdds,
@@ -1699,6 +1714,8 @@ export async function GET(req: Request) {
       homePlayed: homeCurrentStrengthBits.played,
       homeLineupTotal: homeRating.total,
       awayLineupTotal: awayRating.total,
+      homeMissingGoals: missingGoalsPerGame(homeMissing.missing, homeTier),  // ADD
+      awayMissingGoals: missingGoalsPerGame(awayMissing.missing, awayTier),  // ADD
     });
       
     function missingGoalsPerGame(missing: any[], tier: number | null): number {
