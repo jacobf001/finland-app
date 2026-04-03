@@ -447,9 +447,15 @@ function calcImportance(params: {
   const startsN = clamp01(params.starts / Math.max(1, params.maxGames));
   const goalsBoost = clamp01(params.goals / 12) * 0.15;
   const cardPenalty = clamp01(params.yellows * 0.02 + params.reds * 0.08);
-  const base = minutesN * 0.35 + startsN * 0.55 + goalsBoost - cardPenalty;
-  const scale = clamp01(params.importanceCeiling / 92);
-  return Math.max(0, Math.round(base * 100 * scale));
+
+  // calcImportance
+  const base = minutesN * 0.35 + startsN * 0.60 + goalsBoost - cardPenalty;
+
+  // Build raw score on a 0-100 scale first
+  const raw = Math.max(0, Math.round(base * 100));
+
+  // Then cap it at the ceiling
+  return Math.min(raw, params.importanceCeiling);
 }
 
 function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: number, missingImpact = 0, isYouthMatch = false, historicalStrength = sideStrength) {
@@ -462,7 +468,7 @@ function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: numbe
   const avgStarterImp = clamp01((presentAvg / 100) * (1 - missingRatio));
   const histStrength = Number.isFinite(sideStrength) ? sideStrength : 0.5;
   const lineupGap = Math.max(0, histStrength - avgStarterImp);
-  const lineupWeight = clamp01((isYouthMatch ? 0.2 : 0.4) + lineupGap * (isYouthMatch ? 0.3 : 0.6));
+  const lineupWeight = clamp01((isYouthMatch ? 0.65 : 0.55) + lineupGap * (isYouthMatch ? 0.20 : 0.35));
   const histWeight = 1 - lineupWeight;
   const historyCap = clamp01(1 - missingRatio * 0.8);  // was 1.5
   const cappedHistStrength = histStrength * historyCap;
@@ -489,12 +495,13 @@ function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: numbe
   const effectiveStrength = rawEffectiveWithFloor * (1 - untrackedPenalty * (isYouthMatch ? 0.3 : 0.7)) + peakBonus;
 
   const raw = starterSum + benchSum * 0.35;
-  const scaled = raw * (0.85 + 0.30 * effectiveStrength);
+  // sideRating
+  const scaled = raw * (0.75 + 0.55 * effectiveStrength);
   const startersKnown = side.starters.filter((p) => p.season != null).length;
   const coverage = side.starters.length ? startersKnown / side.starters.length : 0;
 
   const missingFloorScale = clamp01(1 - missingRatio * 1.5);
-  const historicalFloor = sideStrength * 0.55 * missingFloorScale;
+  const historicalFloor = sideStrength * (isYouthMatch ? 0.18 : 0.30) * missingFloorScale;
   const effectiveStrengthFloored = Math.max(effectiveStrength, historicalFloor);
 
   return {
@@ -558,94 +565,110 @@ function computeOdds(params: {
   homePosition: number | null;
   awayPosition: number | null;
   homePlayed: number;
+  awayPlayed: number;
   homeLineupTotal: number;
   awayLineupTotal: number;
-  homeMissingGoals: number;  // ADD
-  awayMissingGoals: number;  // ADD
-
+  homeMissingGoals: number;
+  awayMissingGoals: number;
+  women?: boolean;
 }) {
-
   const homeTier = Number.isFinite(Number(params.homeTier)) ? Number(params.homeTier) : 6;
   const awayTier = Number.isFinite(Number(params.awayTier)) ? Number(params.awayTier) : 6;
+  const sameTier = homeTier === awayTier;
+  const shellGap = Math.abs(params.homeRawStrength - params.awayRawStrength);
 
-  const rawStrengthDiff = clamp(params.homeRawStrength - params.awayRawStrength, -1, 1);
-  const tierGapForStrength = Math.abs(homeTier - awayTier);
-  const strengthMultiplier =
-    tierGapForStrength === 0 ? 3.5 :
-    tierGapForStrength === 1 ? 4.0 :
-    6.5;
+  function lineupBaseline(tier: number, women = false) {
+    if (women) {
+      if (tier <= 1) return 470;
+      if (tier === 2) return 380;
+      if (tier === 3) return 300;
+      if (tier === 4) return 220;
+      if (tier === 5) return 170;
+      return 140;
+    }
 
-  function lineupBaseline(tier: number): number {
-    if (tier <= 1) return 500;
-    if (tier === 2) return 380;
-    if (tier === 3) return 300;
-    if (tier === 4) return 220;
-    return 160;
+    if (tier <= 1) return 520;
+    if (tier === 2) return 430;
+    if (tier === 3) return 340;
+    if (tier === 4) return 260;
+    if (tier === 5) return 210;
+    return 170;
   }
 
-  const homeLineupRatio = clamp(params.homeLineupTotal / lineupBaseline(homeTier), 0, 1.5);
-  const awayLineupRatio = clamp(params.awayLineupTotal / lineupBaseline(awayTier), 0, 1.5);
-
-  const awayDepleted = awayTier < homeTier && awayLineupRatio < 0.75;
-  const homeDepleted = homeTier < awayTier && homeLineupRatio < 0.75;
-  const depletionFactor = (awayDepleted || homeDepleted) ? 0.5 : 1.0;
-
-  const strengthZ = rawStrengthDiff * strengthMultiplier * depletionFactor;
-
-  const lineupMultiplier = tierGapForStrength === 0 ? 2.5 : tierGapForStrength === 1 ? 1.8 : 1.2;
-  const lineupZ = (homeLineupRatio - awayLineupRatio) * lineupMultiplier;
-
-  const MISSING_CEILINGS: Record<number, number> = { 1: 92, 2: 78, 3: 64, 4: 50, 5: 36 };
-  // replace missingAdj calculation entirely:
-  const homeMissingNorm = params.homeMissingImpact / ((MISSING_CEILINGS[homeTier] ?? 64) * 4);
-  const awayMissingNorm = params.awayMissingImpact / ((MISSING_CEILINGS[awayTier] ?? 64) * 4);
-  const missingDiff = awayMissingNorm - homeMissingNorm;
-  const missingAdj = clamp(missingDiff * 2.0, -2.0, 2.0);
-
-  const tierAdvRaw = clamp(
-    (awayTier - homeTier) * 1.0 +
-      Math.sign(awayTier - homeTier) * Math.max(0, Math.abs(awayTier - homeTier) - 1) * 0.5,
-    -4.0,
-    4.0,
+  const homeLineupRatio = clamp(
+    params.homeLineupTotal / lineupBaseline(homeTier, params.women ?? false),
+    0,
+    1.6
+  );
+  const awayLineupRatio = clamp(
+    params.awayLineupTotal / lineupBaseline(awayTier, params.women ?? false),
+    0,
+    1.6
   );
 
-  const effectiveStrengthRatio = clamp(
-    params.awayRawStrength / Math.max(params.homeRawStrength, 0.01),
-    0, 3.0
+  const rawStrengthDiff = clamp(params.homeRawStrength - params.awayRawStrength, -1, 1);
+  const strengthZ = rawStrengthDiff * 1.2;
+
+  const lineupZRaw = (homeLineupRatio - awayLineupRatio) * 4.0;
+  const lineupZ = lineupZRaw * 0.8;
+
+  const MISSING_CEILINGS: Record<number, number> = { 1: 92, 2: 78, 3: 64, 4: 50, 5: 36, 6: 28 };
+  const homeMissingNorm = clamp(
+    params.homeMissingImpact / ((MISSING_CEILINGS[homeTier] ?? 50) * 4),
+    0,
+    1
   );
-  const tierAdvScale = effectiveStrengthRatio < 1.0
-    ? clamp(effectiveStrengthRatio, 0.1, 1.0)
-    : 1.0;
-  const tierAdv = tierAdvRaw * depletionFactor * tierAdvScale;
+  const awayMissingNorm = clamp(
+    params.awayMissingImpact / ((MISSING_CEILINGS[awayTier] ?? 50) * 4),
+    0,
+    1
+  );
 
-  const avgTier = (homeTier + awayTier) / 2;
-  // Reduce home advantage when there's a large tier gap.
-  // A Tier 1 away side should not be overridden by a flat home boost.
-  const tierGapAbs = Math.abs(homeTier - awayTier);
-  const homeAdvBase = clamp(0.4 - (avgTier - 1) * 0.1, 0.05, 0.4);
-  const homeAdv = homeAdvBase * clamp(1 - tierGapAbs * 0.25, 0.2, 1.0);
+  const sameTierMissingMultiplier =
+    sameTier
+      ? (shellGap < 0.08 ? 1.6 : 2.2)
+      : 2.2;
 
-    // Position term — only meaningful after enough games played
-  const posWeight = clamp01(params.homePlayed / 6);
-  const posGap = (params.awayPosition ?? 6) - (params.homePosition ?? 6);
-  const tierPosWeight = clamp(1 - (Math.min(homeTier, awayTier) - 1) * 0.2, 0.2, 1.0);
-  const posZ = clamp(posGap * 0.3, -2.0, 2.0) * posWeight * tierPosWeight;
+  const missingAdjRaw = clamp(
+    (awayMissingNorm - homeMissingNorm) * sameTierMissingMultiplier,
+    -1.5,
+    1.5
+  );
+  const missingAdj = missingAdjRaw * 0.85;
 
-  const homeMissingGoalsZ = clamp(params.homeMissingGoals * 0.8, 0, 2.0);
-  const awayMissingGoalsZ = clamp(params.awayMissingGoals * 0.8, 0, 2.0);
+  const homeMissingGoalsZ = clamp(params.homeMissingGoals * 0.55, 0, 1.0);
+  const awayMissingGoalsZ = clamp(params.awayMissingGoals * 0.55, 0, 1.0);
   const missingGoalsAdj = awayMissingGoalsZ - homeMissingGoalsZ;
 
-  const z = strengthZ + lineupZ + missingAdj + missingGoalsAdj + tierAdv + homeAdv + posZ;
+  const playedWeight = clamp01(Math.min(params.homePlayed, params.awayPlayed) / 6);
+  const posGap = (params.awayPosition ?? 6) - (params.homePosition ?? 6);
+  const posZ = clamp(posGap * 0.10, -0.7, 0.7) * playedWeight;
+
+  const tierGap = awayTier - homeTier;
+  const tierAdv = clamp(tierGap * 0.25, -0.7, 0.7);
+
+  const homeAdv = 0.16;
+
+  const z = lineupZ + missingAdj + missingGoalsAdj + strengthZ + posZ + tierAdv + homeAdv;
 
   const pHomeRaw = sigmoid(z);
   const pAwayRaw = 1 - pHomeRaw;
 
   const gap = Math.abs(z);
-  const pDraw = clamp(0.22 - 0.07 * gap, 0.07, 0.24);
+  const pDraw = clamp(0.27 - 0.035 * gap, 0.16, 0.30);
 
-  const pHome = (1 - pDraw) * pHomeRaw;
-  const pAway = (1 - pDraw) * pAwayRaw;
+  let pHome = (1 - pDraw) * pHomeRaw;
+  let pAway = (1 - pDraw) * pAwayRaw;
 
+  pHome = Math.min(pHome, 0.85);
+  pAway = Math.max(pAway, 0.03);
+
+  const sideTotal = pHome + pAway;
+  if (sideTotal > 0) {
+    const targetSideTotal = 1 - pDraw;
+    pHome = (pHome / sideTotal) * targetSideTotal;
+    pAway = (pAway / sideTotal) * targetSideTotal;
+  }
 
   return {
     probabilities: { home: pHome, draw: pDraw, away: pAway },
@@ -882,8 +905,12 @@ function calcWeightedImportance(
 
   // Discount very young players (under 18) playing in senior competitions
   const playerAge = birthYear ? seasonYearCtx - birthYear : 99;
-  const isVeryYoung = playerAge < 18;
-  const youthPlayerDiscount = isVeryYoung ? 0.5 : 1.0;
+  const seniorEvidence = totalMins + totalStarts * 90;
+
+  let youthPlayerDiscount = 1.0;
+  if (playerAge < 18 && seniorEvidence < 900) youthPlayerDiscount = 0.75;
+  if (playerAge < 17 && seniorEvidence < 700) youthPlayerDiscount = 0.6;
+  if (playerAge < 16) youthPlayerDiscount = 0.5;
 
   const rawImportance = calcImportance({
     minutes: totalMins * youthPlayerDiscount,
@@ -1394,24 +1421,103 @@ export async function GET(req: Request) {
       const playerRows = allRowsByPlayer.get(String(p.spl_player_id)) ?? [];
       const prevPlayerRows = allPrevRowsByPlayer.get(String(p.spl_player_id)) ?? [];
 
-      const chosenRows = pickPreferredRows(playerRows, null, null, matchGender);
-      const prevChosenRows = pickPreferredRows(prevPlayerRows, null, null, matchGender);
+      // Prefer actual team/category first
+      const strictChosenRows = pickPreferredRows(playerRows, sideTeamId, sideCategoryKey, matchGender);
+      const broadChosenRows = pickPreferredRows(playerRows, null, null, matchGender);
+
+      const strictPrevChosenRows = pickPreferredRows(prevPlayerRows, sideTeamId, sideCategoryKey, matchGender);
+      const broadPrevChosenRows = pickPreferredRows(prevPlayerRows, null, null, matchGender);
+
+      function evidenceScore(
+      rows: NormalizedSeasonRow[],
+      sideTeamId?: string | null,
+      sideCategoryKey?: string | null,
+    ) {
+      return rows.reduce((sum, r) => {
+        const fallbackTier = fallbackTierFromCategory(r.competition_category);
+        const tier =
+          Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
+            ? Number(r.competition_tier)
+            : (fallbackTier ?? 99);
+
+        let tierWeight = 0.35;
+        if (tier <= 1) tierWeight = 1.25;
+        else if (tier === 2) tierWeight = 1.1;
+        else if (tier === 3) tierWeight = 1.0;
+        else if (tier === 4) tierWeight = 0.82;
+        else if (tier === 5) tierWeight = 0.65;
+        else if (tier === 6) tierWeight = 0.45;
+        else if (tier >= 7) tierWeight = 0.30;
+
+        const sameTeam =
+          sideTeamId != null && String(r.spl_team_id ?? "") === String(sideTeamId);
+
+        const sameCategory =
+          !!sideCategoryKey &&
+          normalizeCategoryKey(r.competition_category) === sideCategoryKey;
+
+        let contextWeight = 1.0;
+        if (sameTeam) contextWeight += 0.25;
+        if (sameCategory) contextWeight += 0.15;
+
+        return sum + (
+          Number(r.minutes ?? 0) +
+          Number(r.starts ?? 0) * 90 +
+          Number(r.matches_played ?? 0) * 20
+        ) * tierWeight * contextWeight;
+      }, 0);
+    }
+
+      const chosenRows =
+        evidenceScore(strictChosenRows) >= 700
+          ? strictChosenRows
+          : broadChosenRows;
+
+      const prevChosenRows =
+        evidenceScore(strictPrevChosenRows) >= 700
+          ? strictPrevChosenRows
+          : broadPrevChosenRows;
 
       const playerBirthYear = birthYearById.get(String(p.spl_player_id)) ?? null;
-      const currResult = chosenRows.length > 0 
-        ? calcWeightedImportance(chosenRows, seasonYear, playerBirthYear) 
-        : null;
-      const prevResult = prevChosenRows.length > 0 
-        ? calcWeightedImportance(prevChosenRows, prevSeasonYear, playerBirthYear) 
-        : null;
+
+      const strictCurrScore = evidenceScore(strictChosenRows, sideTeamId, sideCategoryKey);
+      const broadCurrScore = evidenceScore(broadChosenRows, sideTeamId, sideCategoryKey);
+      const strictPrevScore = evidenceScore(strictPrevChosenRows, sideTeamId, sideCategoryKey);
+      const broadPrevScore = evidenceScore(broadPrevChosenRows, sideTeamId, sideCategoryKey);
+
+      const calcCurrRows =
+        broadCurrScore > strictCurrScore * 1.35 ? broadChosenRows : strictChosenRows;
+
+      const calcPrevRows =
+        broadPrevScore > strictPrevScore * 1.35 ? broadPrevChosenRows : strictPrevChosenRows;
+
+      const currResult =
+        calcCurrRows.length > 0
+          ? calcWeightedImportance(calcCurrRows, seasonYear, playerBirthYear)
+          : null;
+
+      const prevResult =
+        calcPrevRows.length > 0
+          ? calcWeightedImportance(calcPrevRows, prevSeasonYear, playerBirthYear)
+          : null;
 
       let importance = 0;
       let importanceCeiling = currResult?.ceiling ?? prevResult?.ceiling ?? 100;
 
       if (currResult !== null && prevResult !== null) {
-        const currMins = chosenRows.reduce((sum, r) => sum + Number(r.minutes ?? 0), 0);
-        const prevWeight = Math.max(0, 1 - currMins / 500) * 0.3;
-        importance = Math.round(currResult.importance * (1 - prevWeight) + prevResult.importance * prevWeight);
+        const currEvidence = chosenRows.reduce(
+          (sum, r) =>
+            sum +
+            Number(r.minutes ?? 0) +
+            Number(r.starts ?? 0) * 90 +
+            Number(r.matches_played ?? 0) * 20,
+          0,
+        );
+
+        const prevWeight = Math.max(0, 1 - currEvidence / 500) * 0.3;
+        importance = Math.round(
+          currResult.importance * (1 - prevWeight) + prevResult.importance * prevWeight,
+        );
       } else if (currResult !== null) {
         importance = currResult.importance;
       } else if (prevResult !== null) {
@@ -1423,50 +1529,130 @@ export async function GET(req: Request) {
       const sideTier = Number.isFinite(Number(sideTierRaw)) ? Number(sideTierRaw) : 99;
 
       if (sideTier < 99) {
-        const sideCeiling = isWomen
-          ? sideTier <= 1
-            ? 92
-            : sideTier <= 2
-              ? 78
-              : 22
-          : sideTier <= 1
-            ? 92
-            : sideTier === 2
-              ? 78
-              : sideTier === 3
-                ? 64
-                : sideTier === 4
-                  ? 50
-                  : sideTier === 5
-                    ? 36
-                    : 28;
+          const sideCeiling = isWomen
+            ? sideTier <= 1
+              ? 92
+              : sideTier <= 2
+                ? 78
+                : 22
+            : sideTier <= 1
+              ? 92
+              : sideTier === 2
+                ? 78
+                : sideTier === 3
+                  ? 64
+                  : sideTier === 4
+                    ? 50
+                    : sideTier === 5
+                      ? 36
+                      : 28;
 
-        const playerHighestTier = [...chosenRows].reduce((best: number, r) => {
-          const fallbackTier = fallbackTierFromCategory(r.competition_category);
-          const t =
-            Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
-              ? Number(r.competition_tier)
-              : (fallbackTier ?? 99);
-          return Number(r.minutes ?? 0) >= 180 && t < best ? t : best;
-        }, 99);
+          const tierRowsForCap = broadChosenRows.length > 0 ? broadChosenRows : chosenRows;
 
-        const effectiveCeiling = playerHighestTier < sideTier ? importanceCeiling : sideCeiling;
-        if (effectiveCeiling < importanceCeiling) {
+          const playerHighestTier = tierRowsForCap.reduce((best: number, r) => {
+            const fallbackTier = fallbackTierFromCategory(r.competition_category);
+            const t =
+              Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
+                ? Number(r.competition_tier)
+                : (fallbackTier ?? 99);
+
+            const mins = Number(r.minutes ?? 0);
+            const starts = Number(r.starts ?? 0);
+            const apps = Number(r.matches_played ?? 0);
+
+            const hasEvidence = mins >= 180 || starts >= 3 || apps >= 5;
+            return hasEvidence && t < best ? t : best;
+          }, 99);
+
+          const playerEvidenceScore = tierRowsForCap.reduce((sum, r) => {
+            return (
+              sum +
+              Number(r.minutes ?? 0) +
+              Number(r.starts ?? 0) * 90 +
+              Number(r.matches_played ?? 0) * 20
+            );
+          }, 0);
+
+          let effectiveCeiling = Math.min(sideCeiling, importanceCeiling);
+
+          if (playerHighestTier < 99) {
+            if (playerHighestTier < sideTier) {
+              // proven stronger-level player than today's team
+              effectiveCeiling = Math.max(
+                importanceCeiling,
+                tierBaseCeiling(playerHighestTier, false, isWomen)
+              );
+            } else if (playerHighestTier === sideTier) {
+              effectiveCeiling = Math.min(sideCeiling, importanceCeiling);
+            } else {
+              effectiveCeiling = Math.min(
+                sideCeiling,
+                tierBaseCeiling(playerHighestTier, false, isWomen)
+              );
+            }
+          }
+
+          // only clamp hard if evidence is poor
+          if (playerEvidenceScore < 500) {
+            effectiveCeiling = Math.min(effectiveCeiling, sideCeiling);
+          }
+
           importanceCeiling = effectiveCeiling;
-          const hasTeamStats =
-            sideTeamId != null
-              ? chosenRows.some((r) => String(r.spl_team_id ?? "") === String(sideTeamId) && Number(r.minutes ?? 0) > 0)
-              : false;
+          importance = Math.min(importance, effectiveCeiling);
 
-          importance = !hasTeamStats && importance < Math.round(effectiveCeiling * 0.35)
-            ? Math.round(effectiveCeiling * 0.35)
-            : Math.min(importance, effectiveCeiling);
+          // strong proven players one tier up should not collapse into low ceilings
+          if (playerHighestTier < sideTier && playerEvidenceScore >= 900) {
+            importance = Math.max(importance, Math.round(effectiveCeiling * 0.45));
+          }
         }
+
+      const currentSeniorRows = chosenRows.filter(
+        (r) =>
+          !isYouthCategory(r.competition_category) &&
+          Number(r.minutes ?? 0) > 0
+      );
+
+      const currentSeniorMinutes = currentSeniorRows.reduce(
+        (sum, r) => sum + Number(r.minutes ?? 0),
+        0
+      );
+
+      // If player has only a small amount of current senior evidence,
+      // stop them reaching near-max from youth/history support
+      if (currentSeniorMinutes > 0 && currentSeniorMinutes < 700) {
+        const cap =
+          currentSeniorMinutes < 250 ? 32 :
+          currentSeniorMinutes < 450 ? 42 :
+          currentSeniorMinutes < 700 ? 55 :
+          999;
+
+        importance = Math.min(importance, Math.min(cap, importanceCeiling));
+      }
+
+      const hasCurrentSeasonEvidence =
+        chosenRows.some(
+          (r) =>
+            Number(r.season_year) === seasonYear &&
+            (Number(r.minutes ?? 0) > 0 || Number(r.starts ?? 0) > 0 || Number(r.matches_played ?? 0) > 0)
+        );
+
+      if (!hasCurrentSeasonEvidence) {
+        importance = Math.min(importance, 10);
       }
 
       const seasons = playerRows
         .filter((r) => Number(r.competition_tier ?? 99) < 99)
-        .sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0))
+        .sort((a, b) => {
+          const aScore =
+            Number(a.minutes ?? 0) +
+            Number(a.starts ?? 0) * 90 +
+            Number(a.matches_played ?? 0) * 20;
+          const bScore =
+            Number(b.minutes ?? 0) +
+            Number(b.starts ?? 0) * 90 +
+            Number(b.matches_played ?? 0) * 20;
+          return bScore - aScore;
+        })
         .slice(0, 5)
         .map((sr) => {
           const sTeamId = sr.spl_team_id ? String(sr.spl_team_id) : null;
@@ -1491,7 +1677,17 @@ export async function GET(req: Request) {
 
       const prevSeasons = prevPlayerRows
         .filter((r) => Number(r.competition_tier ?? 99) < 99)
-        .sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0))
+        .sort((a, b) => {
+          const aScore =
+            Number(a.minutes ?? 0) +
+            Number(a.starts ?? 0) * 90 +
+            Number(a.matches_played ?? 0) * 20;
+          const bScore =
+            Number(b.minutes ?? 0) +
+            Number(b.starts ?? 0) * 90 +
+            Number(b.matches_played ?? 0) * 20;
+          return bScore - aScore;
+        })
         .slice(0, 5)
         .map((pr) => {
           const prevTeamId = pr.spl_team_id ? String(pr.spl_team_id) : null;
@@ -1674,8 +1870,8 @@ export async function GET(req: Request) {
     const isYouthMatch = matchCategoryKey?.startsWith("u") || matchCategoryKey?.includes("p20") || matchCategoryKey?.includes("p21") || false;
     const homeRating = sideRating(home, homeStrength, homeMissing.missingImpact, isYouthMatch, homeStrength);
     const awayRating = sideRating(away, awayStrength, awayMissing.missingImpact, isYouthMatch, awayStrength);
-    const homeEffectiveTier = dominantPlayerTier(home.starters) ?? homeTier;
-    const awayEffectiveTier = dominantPlayerTier(away.starters) ?? awayTier;
+    const homeEffectiveTier = isYouthMatch ? homeTier : (dominantPlayerTier(home.starters) ?? homeTier);
+    const awayEffectiveTier = isYouthMatch ? awayTier : (dominantPlayerTier(away.starters) ?? awayTier);
 
 
     const homeOverall = computeOverall({
@@ -1696,26 +1892,28 @@ export async function GET(req: Request) {
       women: isWomen,
     });
 
-    const homeMissingImpactForOdds = isYouthMatch ? 0 : homeMissing.missingImpact;
-    const awayMissingImpactForOdds = isYouthMatch ? 0 : awayMissing.missingImpact;
+    const homeMissingImpactForOdds = isYouthMatch ? homeMissing.missingImpact * 0.35 : homeMissing.missingImpact;
+    const awayMissingImpactForOdds = isYouthMatch ? awayMissing.missingImpact * 0.35 : awayMissing.missingImpact;
 
-    const homeRawStrength = isYouthMatch ? homeStrength : homeRating.effectiveStrength;
-    const awayRawStrength = isYouthMatch ? awayStrength : awayRating.effectiveStrength;
+    //const homeRawStrength = homeRating.effectiveStrength * 0.85 + homeStrength * 0.15;
+    //const awayRawStrength = awayRating.effectiveStrength * 0.85 + awayStrength * 0.15;
 
     const pricing = computeOdds({
       homeTier: homeEffectiveTier,
       awayTier: awayEffectiveTier,
-      homeRawStrength: homeRawStrength,
-      awayRawStrength: awayRawStrength,
+      homeRawStrength: homeRating.effectiveStrength,
+      awayRawStrength: awayRating.effectiveStrength,
       homeMissingImpact: homeMissingImpactForOdds,
       awayMissingImpact: awayMissingImpactForOdds,
       homePosition: homeCurrentStrengthBits.position,
       awayPosition: awayCurrentStrengthBits.position,
       homePlayed: homeCurrentStrengthBits.played,
+      awayPlayed: awayCurrentStrengthBits.played,
       homeLineupTotal: homeRating.total,
       awayLineupTotal: awayRating.total,
-      homeMissingGoals: missingGoalsPerGame(homeMissing.missing, homeTier),  // ADD
-      awayMissingGoals: missingGoalsPerGame(awayMissing.missing, awayTier),  // ADD
+      homeMissingGoals: missingGoalsPerGame(homeMissing.missing, homeTier),
+      awayMissingGoals: missingGoalsPerGame(awayMissing.missing, awayTier),
+      women: isWomen,
     });
       
     function missingGoalsPerGame(missing: any[], tier: number | null): number {
@@ -1733,6 +1931,24 @@ export async function GET(req: Request) {
       awayMissingGoals: missingGoalsPerGame(awayMissing.missing, awayTier),
       women: isWomen,
     });
+
+    function debugLineupBaseline(tier: number, women = false) {
+      if (women) {
+        if (tier <= 1) return 470;
+        if (tier === 2) return 380;
+        if (tier === 3) return 300;
+        if (tier === 4) return 220;
+        if (tier === 5) return 170;
+        return 140;
+      }
+
+      if (tier <= 1) return 520;
+      if (tier === 2) return 430;
+      if (tier === 3) return 340;
+      if (tier === 4) return 260;
+      if (tier === 5) return 210;
+      return 170;
+    }
 
     return NextResponse.json({
       inputUrl,
@@ -1757,25 +1973,29 @@ export async function GET(req: Request) {
       },
       model_version: "v3_finland_computed_table",
       debug: {
-        oddsInputs: {
-          homeTier,
-          awayTier,
-          homeStrengthRaw: homeStrength,
-          awayStrengthRaw: awayStrength,
-          homeEffectiveStrength: homeRating.effectiveStrength,
-          awayEffectiveStrength: awayRating.effectiveStrength,
-          homeLineupTotal: homeRating.total,
-          awayLineupTotal: awayRating.total,
-          homeCoverage: homeRating.coverage,
-          awayCoverage: awayRating.coverage,
-          homeMissingImpact: homeMissing.missingImpact,
-          awayMissingImpact: awayMissing.missingImpact,
-          homeOverall,
-          awayOverall,
-          awayLineupRatio: awayRating.total / (awayTier === 3 ? 300 : awayTier === 4 ? 220 : 160),
-          depletionTriggered: (awayRating.total / (awayTier === 3 ? 300 : awayTier === 4 ? 220 : 160)) < 0.6,
+          oddsInputs: {
+            homeTier,
+            awayTier,
+            homeStrengthRaw: homeStrength,
+            awayStrengthRaw: awayStrength,
+            homeEffectiveStrength: homeRating.effectiveStrength,
+            awayEffectiveStrength: awayRating.effectiveStrength,
+            homeLineupTotal: homeRating.total,
+            awayLineupTotal: awayRating.total,
+            homeCoverage: homeRating.coverage,
+            awayCoverage: awayRating.coverage,
+            homeMissingImpact: homeMissing.missingImpact,
+            awayMissingImpact: awayMissing.missingImpact,
+            homeOverall,
+            awayOverall,
+            homeLineupRatio:
+              homeRating.total / debugLineupBaseline(homeEffectiveTier ?? homeTier ?? 6, isWomen),
+            awayLineupRatio:
+              awayRating.total / debugLineupBaseline(awayEffectiveTier ?? awayTier ?? 6, isWomen),
+            depletionTriggered:
+              (awayRating.total / debugLineupBaseline(awayEffectiveTier ?? awayTier ?? 6, isWomen)) < 0.6,
+          },
         },
-      },
     });
   } catch (e: any) {
     console.error("lineup-stats error:", e);
