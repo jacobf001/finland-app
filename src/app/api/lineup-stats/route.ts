@@ -932,8 +932,19 @@ function calcWeightedImportance(
   };
 }
 
+const TEAM_HISTORY_MAP: Record<string, string> = {
+  "35209545": "143879", // IF Gnistan -> PK-35
+};
+
+function resolveHistoricalTeamId(teamId: string): string {
+  return TEAM_HISTORY_MAP[teamId] ?? teamId;
+}
+
 async function getLikelyXI(teamId: string, seasonYear: number, matchGender: string | null) {
-  const { data, error } = await supabaseAdmin
+  const historicalTeamId = resolveHistoricalTeamId(teamId);
+
+  // First try current team/season
+  const { data: currentData, error: currentErr } = await supabaseAdmin
     .from("player_season_stats")
     .select(`
       season_year,
@@ -955,11 +966,55 @@ async function getLikelyXI(teamId: string, seasonYear: number, matchGender: stri
     .eq("season_year", seasonYear)
     .eq("spl_team_id", teamId);
 
-  if (error) throw new Error(error.message);
+  if (currentErr) throw new Error(currentErr.message);
 
-  const rows = normalizeSeasonRows(data ?? []);
-  const filteredRows = matchGender ? rows.filter((r) => genderMatches(r.gender, matchGender)) : rows;
-  const source = filteredRows.length > 0 ? filteredRows : rows;
+  const currentRows = normalizeSeasonRows(currentData ?? []);
+  const currentFiltered = matchGender
+    ? currentRows.filter((r) => genderMatches(r.gender, matchGender))
+    : currentRows;
+  const currentSource = currentFiltered.length > 0 ? currentFiltered : currentRows;
+
+  // If enough current-season evidence exists, use it
+  const enoughCurrentEvidence = currentSource.length >= 11;
+
+  let source = currentSource;
+
+  // Otherwise fall back to mapped historical team from previous season
+  if (!enoughCurrentEvidence && historicalTeamId !== teamId) {
+    const { data: prevData, error: prevErr } = await supabaseAdmin
+      .from("player_season_stats")
+      .select(`
+        season_year,
+        spl_team_id,
+        spl_player_id,
+        player_name,
+        team_name,
+        club_name,
+        category_name,
+        gender,
+        tier,
+        appearances,
+        starts,
+        total_minutes,
+        goals,
+        yellow_cards,
+        red_cards
+      `)
+      .eq("season_year", seasonYear - 1)
+      .eq("spl_team_id", historicalTeamId);
+
+    if (prevErr) throw new Error(prevErr.message);
+
+    const prevRows = normalizeSeasonRows(prevData ?? []);
+    const prevFiltered = matchGender
+      ? prevRows.filter((r) => genderMatches(r.gender, matchGender))
+      : prevRows;
+    const prevSource = prevFiltered.length > 0 ? prevFiltered : prevRows;
+
+    if (prevSource.length > 0) {
+      source = prevSource;
+    }
+  }
 
   const ranked = [...source].sort((a, b) => {
     const aScore = Number(a.starts ?? 0) * 1000 + Number(a.minutes ?? 0);
@@ -1550,20 +1605,24 @@ export async function GET(req: Request) {
           const tierRowsForCap = broadChosenRows.length > 0 ? broadChosenRows : chosenRows;
 
           const playerHighestTier = tierRowsForCap.reduce((best: number, r) => {
-            const fallbackTier = fallbackTierFromCategory(r.competition_category);
-            const t =
-              Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
-                ? Number(r.competition_tier)
-                : (fallbackTier ?? 99);
+          const fallbackTier = fallbackTierFromCategory(r.competition_category);
+          const t =
+            Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
+              ? Number(r.competition_tier)
+              : (fallbackTier ?? 99);
 
-            const mins = Number(r.minutes ?? 0);
-            const starts = Number(r.starts ?? 0);
-            const apps = Number(r.matches_played ?? 0);
+          const mins = Number(r.minutes ?? 0);
+          const starts = Number(r.starts ?? 0);
+          const apps = Number(r.matches_played ?? 0);
+          const isYouthRow = isYouthCategory(r.competition_category);
 
-            const hasEvidence = mins >= 180 || starts >= 3 || apps >= 5;
-            return hasEvidence && t < best ? t : best;
-          }, 99);
+          const hasEvidence = isYouthRow
+            ? mins >= 700 || starts >= 8 || apps >= 12
+            : mins >= 450 || starts >= 5 || apps >= 8;
 
+          return hasEvidence && t < best ? t : best;
+        }, 99);
+        
           const playerEvidenceScore = tierRowsForCap.reduce((sum, r) => {
             return (
               sum +
