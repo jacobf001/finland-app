@@ -369,8 +369,7 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
                         {(p.seasons ?? []).length > 0 ? p.seasons.map((s: any, i: number) => (
                           <div key={i} className="flex gap-1 items-center">
                             <span className="text-white/30 w-12 shrink-0">{s.season_year}</span>
-                            <span className="flex-1 truncate">{s.team_name ?? "—"}{s.tier ? ` · Tier ${s.tier}` : ""}{s.minutes ? ` (${s.minutes}m)` : ""}</span>
-                            <span className="text-white/30 shrink-0">{s.goals}g</span>
+                            <span className="flex-1 truncate">{s.team_name ?? "—"}{s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}{s.minutes ? ` (${s.minutes}m` : ""}{s.goals > 0 ? ` ⚽${s.goals}` : ""}{s.minutes ? `)` : ""}</span>
                             <span className={clsx("font-mono shrink-0 text-xs", s.ceiling > 0 && s.importance / s.ceiling >= 0.8 ? "text-emerald-400" : s.ceiling > 0 && s.importance / s.ceiling >= 0.5 ? "text-sky-400" : "text-white/40")}>
                               {s.importance}/{s.ceiling}
                             </span>
