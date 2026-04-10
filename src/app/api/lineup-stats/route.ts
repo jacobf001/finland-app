@@ -422,6 +422,7 @@ function chooseBestTeamTableRow(
       }, null);
     }
   }
+  
 
   return byCategory.reduce((best: TeamTableRow | null, r) => {
     if (!best) return r;
@@ -571,6 +572,7 @@ function computeOdds(params: {
   homeMissingGoals: number;
   awayMissingGoals: number;
   women?: boolean;
+  sameCompetition?: boolean;
 }) {
   const homeTier = Number.isFinite(Number(params.homeTier)) ? Number(params.homeTier) : 6;
   const awayTier = Number.isFinite(Number(params.awayTier)) ? Number(params.awayTier) : 6;
@@ -640,9 +642,14 @@ function computeOdds(params: {
   const awayMissingGoalsZ = clamp(params.awayMissingGoals * 0.55, 0, 1.0);
   const missingGoalsAdj = awayMissingGoalsZ - homeMissingGoalsZ;
 
-  const playedWeight = clamp01(Math.min(params.homePlayed, params.awayPlayed) / 6);
+  const isNewSeason = params.homePlayed <= 3 || params.awayPlayed <= 3;
+  const playedWeight = isNewSeason
+    ? clamp01(Math.min(params.homePlayed, params.awayPlayed) / 6) * 0.3
+    : clamp01(Math.min(params.homePlayed, params.awayPlayed) / 6);
   const posGap = (params.awayPosition ?? 6) - (params.homePosition ?? 6);
-  const posZ = clamp(posGap * 0.10, -0.7, 0.7) * playedWeight;
+  const posZ = (sameTier && params.sameCompetition)
+    ? clamp(posGap * 0.10, -0.7, 0.7) * playedWeight
+    : 0;
 
   const tierGap = awayTier - homeTier;
   const tierAdv = clamp(tierGap * 0.25, -0.7, 0.7);
@@ -681,21 +688,23 @@ function computeOdds(params: {
 }
 
 const TIER_GOAL_BASELINES: Record<number, [number, number]> = {
-  1: [2.13, 2.06],  // Veikkausliiga
-  2: [2.17, 2.08],  // Ykkönen (avg of variants)
-  3: [2.15, 2.07],  // Miesten Kakkonen
-  4: [2.63, 2.26],  // Miesten Kolmonen
-  5: [2.60, 2.26],  // Miesten Nelonen/Seiska avg
-  6: [2.62, 2.26],  // Miesten Vitonen
-  7: [2.64, 2.27],  // Miesten Kutonen
+  1: [1.66, 1.47],  // Veikkausliiga (351 matches)
+  2: [1.70, 1.49],  // Ykkösliiga (274 matches)
+  3: [1.95, 1.56],  // Ykkönen (330 matches)
+  4: [2.32, 1.80],  // Miesten Kakkonen (696 matches)
+  5: [2.40, 1.97],  // Miesten Kolmonen (2183 matches)
+  6: [2.57, 2.09],  // Miesten Nelonen (2534 matches)
+  7: [2.25, 2.21],  // Miesten Seiska (676 matches)
+  8: [2.93, 2.53],  // Miesten Vitonen (3502 matches)
 };
 
+
 const TIER_GOAL_BASELINES_WOMEN: Record<number, [number, number]> = {
-  1: [2.17, 2.07],  // Kansallinen Liiga avg
-  2: [2.15, 2.12],  // Kansallinen Ykkönen avg
-  3: [2.14, 2.06],  // Naisten Kakkonen
-  4: [2.69, 2.27],  // Naisten Kolmonen
-  5: [2.57, 2.26],  // Naisten Nelonen
+  1: [1.71, 1.70],  // Kansallinen Liiga (328 matches)
+  2: [1.94, 1.58],  // Kansallinen Ykkönen (372 matches)
+  3: [2.31, 2.02],  // Naisten Kakkonen (757 matches)
+  4: [2.75, 2.35],  // Naisten Kolmonen (1500 matches)
+  5: [2.49, 2.09],  // Naisten Nelonen (1745 matches)
 };
 
 function poissonPmf(lambda: number, k: number): number {
@@ -713,6 +722,7 @@ function computeGoals(params: {
   homeMissingGoals: number;
   awayMissingGoals: number;
   women?: boolean;
+  sameCompetition?: boolean; 
 }) {
   const baselines = params.women ? TIER_GOAL_BASELINES_WOMEN : TIER_GOAL_BASELINES;
   const homeTier = Number.isFinite(Number(params.homeTier)) ? Number(params.homeTier) : 3;
@@ -1957,6 +1967,9 @@ export async function GET(req: Request) {
     //const homeRawStrength = homeRating.effectiveStrength * 0.85 + homeStrength * 0.15;
     //const awayRawStrength = awayRating.effectiveStrength * 0.85 + awayStrength * 0.15;
 
+    const sameCompetition = homeCurrentTable?.competition_name != null &&
+      homeCurrentTable?.competition_name === awayCurrentTable?.competition_name;
+
     const pricing = computeOdds({
       homeTier: homeEffectiveTier,
       awayTier: awayEffectiveTier,
@@ -1973,12 +1986,38 @@ export async function GET(req: Request) {
       homeMissingGoals: missingGoalsPerGame(homeMissing.missing, homeTier),
       awayMissingGoals: missingGoalsPerGame(awayMissing.missing, awayTier),
       women: isWomen,
+      sameCompetition,
     });
       
     function missingGoalsPerGame(missing: any[], tier: number | null): number {
       const t = Number.isFinite(Number(tier)) ? Number(tier) : 3;
       const maxG = t <= 3 ? 22 : t === 4 ? 18 : 14;
       return missing.reduce((s, p) => s + Number(p.goals ?? 0) / maxG, 0);
+    }
+
+    // H2H from DB
+    let h2h = null;
+    if (homeTeamId && awayTeamId) {
+      const { data: h2hRows } = await supabaseAdmin
+        .from("matches")
+        .select("spl_match_id, kickoff_at, home_team_spl_id, away_team_spl_id, home_score, away_score")
+        .not("home_score", "is", null)
+        .or(`and(home_team_spl_id.eq.${homeTeamId},away_team_spl_id.eq.${awayTeamId}),and(home_team_spl_id.eq.${awayTeamId},away_team_spl_id.eq.${homeTeamId})`)
+        .order("kickoff_at", { ascending: false })
+        .limit(10);
+
+      if (h2hRows?.length) {
+        const homeWins = h2hRows.filter(r =>
+          (String(r.home_team_spl_id) === homeTeamId && r.home_score > r.away_score) ||
+          (String(r.away_team_spl_id) === homeTeamId && r.away_score > r.home_score)
+        ).length;
+        const awayWins = h2hRows.filter(r =>
+          (String(r.home_team_spl_id) === awayTeamId && r.home_score > r.away_score) ||
+          (String(r.away_team_spl_id) === awayTeamId && r.away_score > r.home_score)
+        ).length;
+        const draws = h2hRows.filter(r => r.home_score === r.away_score).length;
+        h2h = { played: h2hRows.length, homeWins, draws, awayWins, recent: h2hRows };
+      }
     }
 
     const goalsModel = computeGoals({
@@ -2030,6 +2069,7 @@ export async function GET(req: Request) {
         missingLikelyXI: awayMissing.missing,
         missingImpact: awayMissing.missingImpact,
       },
+      h2h,
       model_version: "v3_finland_computed_table",
       debug: {
           oddsInputs: {
