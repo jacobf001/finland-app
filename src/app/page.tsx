@@ -135,13 +135,33 @@ export default function HomePage() {
   );
 }
 
+// Replace the existing ModelCard function in page.tsx with this
+
+const TIER_RANGES: Record<number, [number, number]> = {
+  1: [0.30, 1.0],
+  2: [0.20, 0.54],
+  3: [0.12, 0.34],
+  4: [0.07, 0.22],
+  5: [0.03, 0.18],
+  6: [0.01, 0.10],
+};
+
+function relativeStrength(strength: number, tier: number | null): number {
+  if (!tier) return Math.round(strength * 100);
+  const [lo, hi] = TIER_RANGES[tier] ?? [0, 1];
+  const clamped = Math.max(0, Math.min(1, (strength - lo) / Math.max(0.01, hi - lo)));
+  return Math.round(clamped * 100);
+}
+
 function ModelCard({ analysis }: { analysis: any }) {
   const p = analysis.probabilities;
   const odds = analysis.odds;
   const goals = analysis.goals;
-  const [marketOdds, setMarketOdds] = useState({ home: "", draw: "", away: "" });
-  const homeStrength = analysis.teamStrengthDebug?.home?.strength ?? 0;
-  const awayStrength = analysis.teamStrengthDebug?.away?.strength ?? 0;
+  const [marketOdds, setMarketOdds] = useState({ home: "", away: "", over15: "", over25: "", over35: "" });
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<"idle" | "saved" | "error">("idle");
+  const homeStrength = analysis.teamStrength?.home ?? analysis.teamStrengthDebug?.home?.strength ?? 0;
+  const awayStrength = analysis.teamStrength?.away ?? analysis.teamStrengthDebug?.away?.strength ?? 0;
   const homeName = analysis.teams?.home?.team_name ?? "Home";
   const awayName = analysis.teams?.away?.team_name ?? "Away";
 
@@ -150,6 +170,61 @@ function ModelCard({ analysis }: { analysis: any }) {
     if (!mo || mo <= 1 || !modelProb) return null;
     const edge = (mo / (1 / modelProb) - 1) * 100;
     return { edge, value: edge >= 5 };
+  }
+
+  async function savePrediction() {
+    setSaving(true);
+    setSaveStatus("idle");
+    try {
+      const payload = {
+        fiks_id: analysis.match?.spl_match_id ?? null,
+        home_team: homeName,
+        away_team: awayName,
+        home_team_id: analysis.teams?.home?.spl_team_id ?? null,
+        away_team_id: analysis.teams?.away?.spl_team_id ?? null,
+        kickoff_at: analysis.match?.kickoff_at ?? null,
+        model_home_prob: p?.home ?? null,
+        model_away_prob: p?.away ?? null,
+        model_draw_prob: p?.draw ?? null,
+        fair_home_odds: odds?.home ?? null,
+        fair_away_odds: odds?.away ?? null,
+        fair_draw_odds: odds?.draw ?? null,
+        fair_over15_odds: goals?.markets?.over15?.odds ?? null,
+        fair_over25_odds: goals?.markets?.over25?.odds ?? null,
+        fair_over35_odds: goals?.markets?.over35?.odds ?? null,
+        model_over15_prob: goals?.markets?.over15?.prob ?? null,
+        model_over25_prob: goals?.markets?.over25?.prob ?? null,
+        model_over35_prob: goals?.markets?.over35?.prob ?? null,
+        market_home_odds: marketOdds.home ? Number(marketOdds.home) : null,
+        market_away_odds: marketOdds.away ? Number(marketOdds.away) : null,
+        market_over15_odds: marketOdds.over15 ? Number(marketOdds.over15) : null,
+        market_over25_odds: marketOdds.over25 ? Number(marketOdds.over25) : null,
+        market_over35_odds: marketOdds.over35 ? Number(marketOdds.over35) : null,
+        edge_home: marketOdds.home ? calcEdge(marketOdds.home, p?.home)?.edge ?? null : null,
+        edge_away: marketOdds.away ? calcEdge(marketOdds.away, p?.away)?.edge ?? null : null,
+        edge_over15: marketOdds.over15 ? calcEdge(marketOdds.over15, goals?.markets?.over15?.prob)?.edge ?? null : null,
+        edge_over25: marketOdds.over25 ? calcEdge(marketOdds.over25, goals?.markets?.over25?.prob)?.edge ?? null : null,
+        edge_over35: marketOdds.over35 ? calcEdge(marketOdds.over35, goals?.markets?.over35?.prob)?.edge ?? null : null,
+        value_home: marketOdds.home ? (calcEdge(marketOdds.home, p?.home)?.value ?? false) : false,
+        value_away: marketOdds.away ? (calcEdge(marketOdds.away, p?.away)?.value ?? false) : false,
+        value_over15: marketOdds.over15 ? (calcEdge(marketOdds.over15, goals?.markets?.over15?.prob)?.value ?? false) : false,
+        value_over25: marketOdds.over25 ? (calcEdge(marketOdds.over25, goals?.markets?.over25?.prob)?.value ?? false) : false,
+        value_over35: marketOdds.over35 ? (calcEdge(marketOdds.over35, goals?.markets?.over35?.prob)?.value ?? false) : false,
+      };
+      const res = await fetch("/api/predictions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error("Failed to save");
+      setSaveStatus("saved");
+      setTimeout(() => { window.location.href = "/predictions"; }, 800);
+    } catch {
+      setSaveStatus("error");
+      setTimeout(() => setSaveStatus("idle"), 3000);
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -169,7 +244,7 @@ function ModelCard({ analysis }: { analysis: any }) {
           <div className="h-3 rounded-full bg-white/5 overflow-hidden flex">
             <div className="h-full bg-blue-500" style={{ width: `${Math.round(p.home * 100)}%` }} />
             <div className="h-full bg-white/15" style={{ width: `${Math.round(p.draw * 100)}%` }} />
-            <div className="h-full bg-orange-500" style={{ width: `${Math.round(p.away * 100)}%` }} />
+            <div className="h-full bg-orange-500 flex-1" />
           </div>
         </div>
       )}
@@ -191,7 +266,6 @@ function ModelCard({ analysis }: { analysis: any }) {
           <div className="flex gap-3">
             {([
               { label: "H", key: "home" as const, prob: p.home, nameColor: "text-blue-300" },
-              { label: "D", key: "draw" as const, prob: p.draw, nameColor: "text-white/50" },
               { label: "A", key: "away" as const, prob: p.away, nameColor: "text-orange-300" },
             ]).map(({ label, key, prob, nameColor }) => {
               const edge = calcEdge(marketOdds[key], prob);
@@ -218,14 +292,13 @@ function ModelCard({ analysis }: { analysis: any }) {
               <span className="text-white/30 text-xs">({goals.expectedTotal} total)</span>
             </div>
           </div>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-3 gap-2 mb-3">
             {[
               { label: "Over 1.5", prob: goals.markets.over15.prob, odds: goals.markets.over15.odds },
               { label: "Over 2.5", prob: goals.markets.over25.prob, odds: goals.markets.over25.odds },
               { label: "Over 3.5", prob: goals.markets.over35.prob, odds: goals.markets.over35.odds },
-              { label: "Under 2.5", prob: goals.markets.under25.prob, odds: goals.markets.under25.odds },
               { label: "BTTS Yes", prob: goals.markets.btts_yes.prob, odds: goals.markets.btts_yes.odds },
-              { label: "BTTS No", prob: goals.markets.btts_no.prob, odds: goals.markets.btts_no.odds },
+              { label: "BTTS No",  prob: goals.markets.btts_no.prob,  odds: goals.markets.btts_no.odds },
             ].map(({ label, prob, odds: mOdds }) => {
               const pctNum = Math.round(prob * 100);
               const isFav = prob >= 0.55;
@@ -243,15 +316,33 @@ function ModelCard({ analysis }: { analysis: any }) {
               );
             })}
           </div>
+          <div className="flex gap-3">
+            {([
+              { label: "O1.5", key: "over15" as const, prob: goals.markets.over15.prob },
+              { label: "O2.5", key: "over25" as const, prob: goals.markets.over25.prob },
+              { label: "O3.5", key: "over35" as const, prob: goals.markets.over35.prob },
+            ]).map(({ label, key, prob }) => {
+              const edge = calcEdge(marketOdds[key], prob);
+              return (
+                <div key={key} className="flex-1">
+                  <div className="text-xs font-mono mb-1.5 text-white/40">{label} <span className="text-white/25">fair {(1 / prob).toFixed(2)}</span></div>
+                  <input className="w-full rounded-lg border border-white/10 bg-black/60 px-2 py-1.5 text-sm font-mono focus:border-white/30 focus:outline-none" placeholder="1.80" value={marketOdds[key]} onChange={(e) => setMarketOdds(prev => ({ ...prev, [key]: e.target.value }))} />
+                  {edge && <div className={clsx("mt-1.5 text-xs font-mono font-semibold", edge.value ? "text-teal-400" : edge.edge > 0 ? "text-white/40" : "text-red-400/60")}>{edge.edge >= 0 ? "+" : ""}{edge.edge.toFixed(1)}%{edge.value && <span className="ml-1">✓</span>}</div>}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
+      {/* Strength bars */}
       <div className="mt-4 grid grid-cols-2 gap-3">
         {([
           { name: homeName, strength: homeStrength, tier: analysis.teamStrengthDebug?.home?.competition_tier ?? analysis.teamStrengthDebug?.home?.tier, color: "blue" as const },
           { name: awayName, strength: awayStrength, tier: analysis.teamStrengthDebug?.away?.competition_tier ?? analysis.teamStrengthDebug?.away?.tier, color: "orange" as const },
         ]).map(({ name, strength, tier, color }) => {
           const str = Math.round(strength * 100);
+          const relStr = relativeStrength(strength, tier);
           const isBlue = color === "blue";
           const tierLabel = tier != null && Number(tier) < 90 ? `T${tier}` : "—";
           const tierColor = tier == null ? "text-white/20 bg-white/5 border-white/5" : tier <= 1 ? "text-emerald-300 bg-emerald-950/60 border-emerald-500/20" : tier === 2 ? "text-green-300 bg-green-950/60 border-green-500/20" : tier === 3 ? "text-yellow-300 bg-yellow-950/60 border-yellow-500/20" : tier === 4 ? "text-orange-300 bg-orange-950/60 border-orange-500/20" : "text-red-300 bg-red-950/60 border-red-500/20";
@@ -259,15 +350,37 @@ function ModelCard({ analysis }: { analysis: any }) {
             <div key={name} className="rounded-lg bg-white/3 border border-white/5 px-3 py-2.5">
               <div className="flex items-center justify-between mb-2">
                 <span className={`text-xs font-mono font-semibold px-1.5 py-0.5 rounded border ${tierColor}`}>{tierLabel}</span>
-                <span className="text-xs font-mono text-white/50">{str}<span className="text-white/20">/100</span></span>
+                <div className="text-right">
+                  <span className="text-xs font-mono text-white/50">{relStr}<span className="text-white/20">/100</span></span>
+                  <span className="text-xs font-mono text-white/25 ml-1.5">({str} abs)</span>
+                </div>
               </div>
               <div className="h-1.5 rounded-full bg-white/8 overflow-hidden mb-2">
-                <div className={`h-full rounded-full ${isBlue ? "bg-blue-500" : "bg-orange-500"}`} style={{ width: `${Math.max(2, str)}%` }} />
+                <div className={`h-full rounded-full ${isBlue ? "bg-blue-500" : "bg-orange-500"}`} style={{ width: `${Math.max(2, relStr)}%` }} />
               </div>
               <div className={`text-xs font-medium truncate ${isBlue ? "text-blue-300/80" : "text-orange-300/80"}`}>{name}</div>
             </div>
           );
         })}
+      </div>
+
+      {/* Save button */}
+      <div className="mt-4 pt-4 border-t border-white/5 flex items-center justify-between">
+        <p className="text-xs text-white/30">Save prediction + entered odds to tracker</p>
+        <button
+          type="button"
+          onClick={savePrediction}
+          disabled={saving}
+          className={clsx(
+            "rounded-lg px-4 py-2 text-sm font-semibold transition-all",
+            saveStatus === "saved" ? "bg-teal-600 text-white" :
+            saveStatus === "error" ? "bg-red-900/60 text-red-300" :
+            saving ? "bg-white/8 text-white/30 cursor-not-allowed" :
+            "bg-white/10 text-white hover:bg-white/15 active:scale-95"
+          )}
+        >
+          {saving ? "Saving…" : saveStatus === "saved" ? "✓ Saved" : saveStatus === "error" ? "Error" : "Save Prediction"}
+        </button>
       </div>
     </div>
   );
@@ -369,7 +482,7 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
                         {(p.seasons ?? []).length > 0 ? p.seasons.map((s: any, i: number) => (
                           <div key={i} className="flex gap-1 items-center">
                             <span className="text-white/30 w-12 shrink-0">{s.season_year}</span>
-                            <span className="flex-1 truncate">{s.team_name ?? "—"}{s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}{s.minutes ? ` (${s.minutes}m` : ""}{s.goals > 0 ? ` ⚽${s.goals}` : ""}{s.minutes ? `)` : ""}</span>
+                            <span className="flex-1 truncate">{s.team_name ?? "—"}{s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}{s.minutes ? ` (${s.minutes}m` : ""}{s.goals > 0 ? ` ⚽${s.goals}` : ""}{s.minutes ? `)` : ""}</span>                            <span className="text-white/30 shrink-0">{s.goals}g</span>
                             <span className={clsx("font-mono shrink-0 text-xs", s.ceiling > 0 && s.importance / s.ceiling >= 0.8 ? "text-emerald-400" : s.ceiling > 0 && s.importance / s.ceiling >= 0.5 ? "text-sky-400" : "text-white/40")}>
                               {s.importance}/{s.ceiling}
                             </span>

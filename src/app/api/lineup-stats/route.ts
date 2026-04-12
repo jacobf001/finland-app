@@ -435,29 +435,21 @@ function chooseBestTeamTableRow(
 }
 
 function calcImportance(params: {
-  minutes: number;
-  starts: number;
-  goals: number;
-  yellows: number;
-  reds: number;
-  maxGames: number;
-  importanceCeiling: number;
-}) {
-  const maxMins = params.maxGames * 90;
-  const minutesN = clamp01(params.minutes / Math.max(1, maxMins));
-  const startsN = clamp01(params.starts / Math.max(1, params.maxGames));
-  const goalsBoost = clamp01(params.goals / 12) * 0.15;
+  minutes: number; starts: number; goals: number;
+  yellows: number; reds: number; maxGames: number; ceiling: number;
+}): number {
+  const maxMins     = params.maxGames * 90;
+  const minutesN    = clamp01(params.minutes / Math.max(1, maxMins));
+  const startsN     = clamp01(params.starts  / Math.max(1, params.maxGames));
+  const startsDominant = startsN >= 0.75
+    ? Math.min(startsN * 1.1, 1.0)
+    : startsN * 0.85;
+  const goalsBoost  = clamp01(params.goals / 15) * 0.08;
   const cardPenalty = clamp01(params.yellows * 0.02 + params.reds * 0.08);
-
-  // calcImportance
-  const base = minutesN * 0.35 + startsN * 0.60 + goalsBoost - cardPenalty;
-
-  // Build raw score on a 0-100 scale first
-  const raw = Math.max(0, Math.round(base * 100));
-
-  // Then cap it at the ceiling
-  return Math.min(raw, params.importanceCeiling);
+  const raw = minutesN * 0.30 + startsDominant * 0.65 + goalsBoost - cardPenalty;
+  return Math.min(Math.max(0, Math.round(raw * params.ceiling)), params.ceiling);
 }
+
 
 function sideRating(side: { starters: any[]; bench: any[] }, sideStrength: number, missingImpact = 0, isYouthMatch = false, historicalStrength = sideStrength) {
   const starterSum = side.starters.reduce((s, p) => s + Number(p.importance ?? 0), 0);
@@ -816,7 +808,6 @@ function maxGamesForTier(tier: number, isYouthComp: boolean, women: boolean): nu
 
 function tierBaseCeiling(tier: number, isYouth: boolean, women: boolean): number {
   if (isYouth) {
-    // Youth ceiling is half the senior ceiling at that tier
     if (tier <= 2) return 50;
     if (tier === 3) return 36;
     if (tier === 4) return 28;
@@ -826,10 +817,10 @@ function tierBaseCeiling(tier: number, isYouth: boolean, women: boolean): number
   if (tier <= 1) return 92;
   if (tier === 2) return 78;
   if (tier === 3) return 64;
-  if (tier === 4) return 50;
-  if (tier === 5) return 36;
-  if (tier === 6) return 28;
-  return 22;
+  if (tier === 4) return 55;
+  if (tier === 5) return 45;
+  if (tier === 6) return 36;
+  return 28;
 }
 
 function fallbackTierFromCategory(category: string | null | undefined): number | null {
@@ -929,7 +920,7 @@ function calcWeightedImportance(
     yellows: totalYellows,
     reds: totalReds,
     maxGames,
-    importanceCeiling,
+    ceiling: importanceCeiling,
   });
 
   return {
