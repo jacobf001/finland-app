@@ -8,13 +8,33 @@ function clsx(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+const TIER_RANGES: Record<number, [number, number]> = {
+  1: [0.30, 1.0],
+  2: [0.20, 0.54],
+  3: [0.08, 0.34],
+  4: [0.05, 0.30],
+  5: [0.03, 0.22],
+  6: [0.01, 0.12],
+};
+
+function relativeStrength(strength: number, tier: number | null): number {
+  if (!tier) return Math.round(strength * 100);
+  const [lo, hi] = TIER_RANGES[tier] ?? [0, 1];
+  const clamped = Math.max(0, Math.min(1, (strength - lo) / Math.max(0.01, hi - lo)));
+  return Math.round(clamped * 100);
+}
+
 function SideHeaderCard({
   side, team, ctx,
 }: {
   side: "Home" | "Away";
   team?: { spl_team_id?: string | null; team_name?: string | null };
-  ctx?: { tier?: number | null; competition_tier?: number | null; competition_name?: string | null; strength?: number | null; position?: number | null; played?: number | null; points?: number | null } | null;}) {
+  ctx?: { tier?: number | null; competition_tier?: number | null; competition_name?: string | null; strength?: number | null; position?: number | null; played?: number | null; points?: number | null } | null;
+}) {
   const isHome = side === "Home";
+  const tier = ctx?.tier ?? ctx?.competition_tier ?? null;
+  const strengthPct = ctx?.strength != null ? relativeStrength(ctx.strength, tier) : null;
+
   return (
     <div className={clsx("rounded-xl border p-5 relative overflow-hidden", isHome ? "border-blue-500/20 bg-blue-950/20" : "border-orange-500/20 bg-orange-950/20")}>
       <div className={clsx("absolute top-0 left-0 w-1 h-full", isHome ? "bg-blue-500" : "bg-orange-500")} />
@@ -24,19 +44,19 @@ function SideHeaderCard({
           <div className="text-2xl font-bold">{team?.team_name ?? side}</div>
           <div className="text-sm text-white/40 font-mono">#{team?.spl_team_id ?? "—"}</div>
         </div>
-       <div className="mt-3 space-y-1.5">
+        <div className="mt-3 space-y-1.5">
           {ctx?.competition_name && (
             <div className="text-sm text-white/70">{ctx.competition_name}</div>
           )}
           <div className="flex items-center gap-2">
             <span className="text-xs font-mono text-white/40 w-12">Tier</span>
             <span className="text-sm text-white/80">
-              {(ctx?.tier ?? ctx?.competition_tier) != null ? `Tier ${ctx?.tier ?? ctx?.competition_tier}` : "—"}{ctx?.position != null ? ` · Pos ${ctx.position}` : ""}
+              {tier != null ? `Tier ${tier}` : "—"}{ctx?.position != null ? ` · Pos ${ctx.position}` : ""}
             </span>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs font-mono text-white/40 w-12">Strength</span>
-            <span className="text-sm text-white/80">{ctx?.strength != null ? `${Math.round(ctx.strength * 100)}/100` : "—"}</span>
+            <span className="text-sm text-white/80">{strengthPct != null ? `${strengthPct}/100` : "—"}</span>
           </div>
         </div>
       </div>
@@ -91,7 +111,7 @@ export default function HomePage() {
             </div>
             <div className="flex-1">
               <label className="mb-1.5 block text-xs text-white/50 font-mono uppercase tracking-wider">Match URL</label>
-              <input className="w-full rounded-lg border border-white/10 bg-black/60 px-3 py-2.5 text-sm focus:border-white/30 focus:outline-none" value={matchUrl} onChange={(e) => setMatchUrl(e.target.value)} placeholder="https://www.fotball.no/fotballdata/kamp/?fiksId=8443747" onKeyDown={(e) => e.key === "Enter" && runLineupAnalysis()} />
+              <input className="w-full rounded-lg border border-white/10 bg-black/60 px-3 py-2.5 text-sm focus:border-white/30 focus:outline-none" value={matchUrl} onChange={(e) => setMatchUrl(e.target.value)} placeholder="https://tulospalvelu.palloliitto.fi/match/MATCHID/lineups" onKeyDown={(e) => e.key === "Enter" && runLineupAnalysis()} />
             </div>
             <button type="button" onClick={runLineupAnalysis} disabled={analysisLoading || !matchUrl.trim()} className={clsx("rounded-lg px-6 py-2.5 text-sm font-semibold transition-all", analysisLoading || !matchUrl.trim() ? "bg-white/8 text-white/30 cursor-not-allowed" : "bg-white text-black hover:bg-white/90 active:scale-95")}>
               {analysisLoading ? "Analysing…" : "Analyse"}
@@ -103,8 +123,8 @@ export default function HomePage() {
         {analysis && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <SideHeaderCard side="Home" team={analysis.teams?.home} ctx={analysis.teamStrengthDebug?.home} />
-              <SideHeaderCard side="Away" team={analysis.teams?.away} ctx={analysis.teamStrengthDebug?.away} />
+              <SideHeaderCard side="Home" team={analysis.teams?.home} ctx={{ ...analysis.teamStrengthDebug?.home, strength: analysis.teamStrength?.home }} />
+              <SideHeaderCard side="Away" team={analysis.teams?.away} ctx={{ ...analysis.teamStrengthDebug?.away, strength: analysis.teamStrength?.away }} />
             </div>
             <H2HCard
               h2h={analysis.h2h}
@@ -133,24 +153,6 @@ export default function HomePage() {
       </div>
     </main>
   );
-}
-
-// Replace the existing ModelCard function in page.tsx with this
-
-const TIER_RANGES: Record<number, [number, number]> = {
-  1: [0.30, 1.0],
-  2: [0.20, 0.54],
-  3: [0.12, 0.34],
-  4: [0.07, 0.22],
-  5: [0.03, 0.18],
-  6: [0.01, 0.10],
-};
-
-function relativeStrength(strength: number, tier: number | null): number {
-  if (!tier) return Math.round(strength * 100);
-  const [lo, hi] = TIER_RANGES[tier] ?? [0, 1];
-  const clamped = Math.max(0, Math.min(1, (strength - lo) / Math.max(0.01, hi - lo)));
-  return Math.round(clamped * 100);
 }
 
 function ModelCard({ analysis }: { analysis: any }) {
@@ -226,6 +228,10 @@ function ModelCard({ analysis }: { analysis: any }) {
       setSaving(false);
     }
   }
+
+  const homeTier = analysis.teamStrengthDebug?.home?.competition_tier ?? analysis.teamStrengthDebug?.home?.tier;
+  const awayTier = analysis.teamStrengthDebug?.away?.competition_tier ?? analysis.teamStrengthDebug?.away?.tier;
+  const isCrossTier = homeTier != null && awayTier != null && Number(homeTier) !== Number(awayTier);
 
   return (
     <div className="rounded-2xl border border-white/8 bg-white/3 p-6">
@@ -338,8 +344,8 @@ function ModelCard({ analysis }: { analysis: any }) {
       {/* Strength bars */}
       <div className="mt-4 grid grid-cols-2 gap-3">
         {([
-          { name: homeName, strength: homeStrength, tier: analysis.teamStrengthDebug?.home?.competition_tier ?? analysis.teamStrengthDebug?.home?.tier, color: "blue" as const },
-          { name: awayName, strength: awayStrength, tier: analysis.teamStrengthDebug?.away?.competition_tier ?? analysis.teamStrengthDebug?.away?.tier, color: "orange" as const },
+          { name: homeName, strength: homeStrength, tier: homeTier, color: "blue" as const },
+          { name: awayName, strength: awayStrength, tier: awayTier, color: "orange" as const },
         ]).map(({ name, strength, tier, color }) => {
           const str = Math.round(strength * 100);
           const relStr = relativeStrength(strength, tier);
@@ -359,6 +365,9 @@ function ModelCard({ analysis }: { analysis: any }) {
                 <div className={`h-full rounded-full ${isBlue ? "bg-blue-500" : "bg-orange-500"}`} style={{ width: `${Math.max(2, relStr)}%` }} />
               </div>
               <div className={`text-xs font-medium truncate ${isBlue ? "text-blue-300/80" : "text-orange-300/80"}`}>{name}</div>
+              {isCrossTier && (
+                <div className="text-xs text-white/20 font-mono mt-1">cross-tier · not comparable</div>
+              )}
             </div>
           );
         })}
@@ -461,10 +470,10 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
               const rowHL = imp === 0 ? "" : ratio >= 0.8 ? "border-l-2 border-l-emerald-500 bg-emerald-950/20" : ratio >= 0.6 ? "border-l-2 border-l-sky-500/40 bg-sky-950/10" : ratio >= 0.4 ? "border-l-2 border-l-yellow-500/50 bg-yellow-950/10" : "";
               return (
                 <React.Fragment key={playerId}>
-                 <tr className={clsx("border-t border-white/5 cursor-pointer hover:bg-white/3 transition-colors", rowHL)} onClick={() => toggle(playerId)}>
+                  <tr className={clsx("border-t border-white/5 cursor-pointer hover:bg-white/3 transition-colors", rowHL)} onClick={() => toggle(playerId)}>
                     <td className="px-3 py-2.5 text-white/25 text-xs font-mono">{p.shirt_no ?? "—"}</td>
                     <td className="px-3 py-2.5">
-                      <div className="font-medium text-white/90 text-sm">{p.name ?? `Player ${p.nff_player_id}`}</div>
+                      <div className="font-medium text-white/90 text-sm">{p.name ?? `Player ${p.spl_player_id}`}</div>
                     </td>
                     <td className="px-3 py-2.5 text-right text-white/50 text-xs font-mono hidden sm:table-cell">{p.season?.minutes ?? "—"}</td>
                     <td className="px-3 py-2.5 text-right text-white/50 text-xs font-mono hidden sm:table-cell">{p.season?.starts ?? "—"}</td>
@@ -482,7 +491,8 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
                         {(p.seasons ?? []).length > 0 ? p.seasons.map((s: any, i: number) => (
                           <div key={i} className="flex gap-1 items-center">
                             <span className="text-white/30 w-12 shrink-0">{s.season_year}</span>
-                            <span className="flex-1 truncate">{s.team_name ?? "—"}{s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}{s.minutes ? ` (${s.minutes}m` : ""}{s.goals > 0 ? ` ⚽${s.goals}` : ""}{s.minutes ? `)` : ""}</span>                            <span className="text-white/30 shrink-0">{s.goals}g</span>
+                            <span className="flex-1 truncate">{s.team_name ?? "—"}{s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}{s.minutes ? ` (${s.minutes}m` : ""}{s.goals > 0 ? ` ⚽${s.goals}` : ""}{s.minutes ? `)` : ""}</span>
+                            <span className="text-white/30 shrink-0">{s.goals}g</span>
                             <span className={clsx("font-mono shrink-0 text-xs", s.ceiling > 0 && s.importance / s.ceiling >= 0.8 ? "text-emerald-400" : s.ceiling > 0 && s.importance / s.ceiling >= 0.5 ? "text-sky-400" : "text-white/40")}>
                               {s.importance}/{s.ceiling}
                             </span>
