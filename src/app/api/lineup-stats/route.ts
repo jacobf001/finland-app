@@ -1716,6 +1716,7 @@ export async function GET(req: Request) {
         .slice(0, 5)
         .map((sr) => {
           const sTeamId = sr.spl_team_id ? String(sr.spl_team_id) : null;
+          const imp = calcWeightedImportance([sr], seasonYear, playerBirthYear);
           return {
             season_year: seasonYear,
             spl_team_id: sTeamId,
@@ -1727,6 +1728,8 @@ export async function GET(req: Request) {
             goals: Number(sr.goals ?? 0),
             yellows: Number(sr.yellows ?? 0),
             reds: Number(sr.reds ?? 0),
+            importance: imp.importance,
+            ceiling: imp.ceiling,
             club_ctx: {
               competition_tier: sr.competition_tier,
               competition_category: sr.competition_category,
@@ -1751,6 +1754,7 @@ export async function GET(req: Request) {
         .slice(0, 5)
         .map((pr) => {
           const prevTeamId = pr.spl_team_id ? String(pr.spl_team_id) : null;
+          const imp = calcWeightedImportance([pr], prevSeasonYear, playerBirthYear);
           return {
             season_year: prevSeasonYear,
             spl_team_id: prevTeamId,
@@ -1762,6 +1766,8 @@ export async function GET(req: Request) {
             goals: Number(pr.goals ?? 0),
             yellows: Number(pr.yellows ?? 0),
             reds: Number(pr.reds ?? 0),
+            importance: imp.importance,
+            ceiling: imp.ceiling,
             club_ctx: {
               competition_tier: pr.competition_tier,
               competition_category: pr.competition_category,
