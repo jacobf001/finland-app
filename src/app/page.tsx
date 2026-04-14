@@ -487,13 +487,21 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
                     <tr className="border-t border-white/5 bg-black/20">
                       <td />
                       <td colSpan={6} className="px-3 py-3 text-xs text-white/50 space-y-1">
-                        {p.recent5 && <div className="flex items-center gap-2 mb-1"><span className="text-white/30">Last 5:</span><span>{p.recent5.lastNMinutes}m in {p.recent5.lastNApps} apps ({p.recent5.lastNStarts} starts)</span></div>}
+                        {p.recent5 && (
+                          <div className="text-white/40 mb-2">
+                            Last 5: {p.recent5.lastNMinutes}m in {p.recent5.lastNApps} apps ({p.recent5.lastNStarts} starts)
+                          </div>
+                        )}
                         {(p.seasons ?? []).length > 0 ? p.seasons.map((s: any, i: number) => (
-                          <div key={i} className="flex gap-1 items-center">
-                            <span className="text-white/30 w-12 shrink-0">{s.season_year}</span>
-                            <span className="flex-1 truncate">{s.team_name ?? "—"}{s.club_ctx?.competition_tier ? ` · Tier ${s.club_ctx.competition_tier}` : ""}{s.minutes ? ` (${s.minutes}m` : ""}{s.goals > 0 ? ` ⚽${s.goals}` : ""}{s.minutes ? `)` : ""}</span>
-                            <span className="text-white/30 shrink-0">{s.goals}g</span>
-                            <span className={clsx("font-mono shrink-0 text-xs", s.ceiling > 0 && s.importance / s.ceiling >= 0.8 ? "text-emerald-400" : s.ceiling > 0 && s.importance / s.ceiling >= 0.5 ? "text-sky-400" : "text-white/40")}>
+                          <div key={i} className="flex flex-wrap gap-x-2 gap-y-0.5 items-baseline">
+                            <span className={`font-mono shrink-0 ${i === 0 ? "text-sky-400/70" : "text-white/25"}`}>{s.season_year}</span>
+                            <span className="text-white/60 shrink-0">{s.team_name ?? "—"}</span>
+                            {s.tier && <span className="text-white/30">T{s.tier}</span>}
+                            {s.position && <span className="text-white/30">Pos {s.position}</span>}
+                            {s.minutes > 0 && <span className="text-white/40">{s.minutes}m</span>}
+                            {s.starts > 0 && <span className="text-white/40">{s.starts}gs</span>}
+                            {s.goals > 0 && <span className="text-emerald-400/70">⚽{s.goals}</span>}
+                            <span className={`font-mono ml-auto ${s.ceiling > 0 && s.importance / s.ceiling >= 0.8 ? "text-emerald-400" : s.ceiling > 0 && s.importance / s.ceiling >= 0.5 ? "text-sky-400" : "text-white/40"}`}>
                               {s.importance}/{s.ceiling}
                             </span>
                           </div>
