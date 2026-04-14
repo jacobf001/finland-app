@@ -903,6 +903,9 @@ function calcWeightedImportance(
   const isPrimaryYouth = isYouthCategory(primaryCategory);
   const maxGames = primaryTier < 99 ? maxGamesForTier(primaryTier, isPrimaryYouth, women) : women ? 18 : 22;
   const importanceCeiling = primaryTier < 99 ? tierBaseCeiling(primaryTier, isPrimaryYouth, women) : women ? 22 : 64;
+  if (totalStarts > 14) {
+    console.log("DEBUG calcWeighted:", { totalStarts, totalMins, maxGames, primaryTier, importanceCeiling });
+  }
 
   // Discount very young players (under 18) playing in senior competitions
   const playerAge = birthYear ? seasonYearCtx - birthYear : 99;
@@ -1608,23 +1611,22 @@ export async function GET(req: Request) {
           const tierRowsForCap = broadChosenRows.length > 0 ? broadChosenRows : chosenRows;
 
           const playerHighestTier = tierRowsForCap.reduce((best: number, r) => {
-          const fallbackTier = fallbackTierFromCategory(r.competition_category);
-          const t =
-            Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
-              ? Number(r.competition_tier)
-              : (fallbackTier ?? 99);
+            const fallbackTier = fallbackTierFromCategory(r.competition_category);
+            const t =
+              Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
+                ? Number(r.competition_tier)
+                : (fallbackTier ?? 99);
 
-          const mins = Number(r.minutes ?? 0);
-          const starts = Number(r.starts ?? 0);
-          const apps = Number(r.matches_played ?? 0);
-          const isYouthRow = isYouthCategory(r.competition_category);
+            const mins = Number(r.minutes ?? 0);
+            const starts = Number(r.starts ?? 0);
+            const isYouthRow = isYouthCategory(r.competition_category);
 
-          const hasEvidence = isYouthRow
-            ? mins >= 700 || starts >= 8 || apps >= 12
-            : mins >= 450 || starts >= 5 || apps >= 8;
+            // Don't use youth rows for highest tier calculation
+            if (isYouthRow) return best;
 
-          return hasEvidence && t < best ? t : best;
-        }, 99);
+            const hasEvidence = mins >= 450 || (starts >= 5 && mins >= 200);
+            return hasEvidence && t < best ? t : best;
+          }, 99);
         
           const playerEvidenceScore = tierRowsForCap.reduce((sum, r) => {
             return (
@@ -1661,6 +1663,16 @@ export async function GET(req: Request) {
 
           importanceCeiling = effectiveCeiling;
           importance = Math.min(importance, effectiveCeiling);
+
+          if (String(p.spl_player_id) === "253914") {
+            console.log("DEBUG Hänninen tierRows:", tierRowsForCap.map(r => ({ tier: r.competition_tier, mins: r.minutes, starts: r.starts, apps: r.matches_played, cat: r.competition_category })));
+          }
+          console.log("DEBUG isYouth:", {
+            cat1: isYouthCategory('P20 SM-karsintasarja'),
+            cat2: isYouthCategory('P20 SM'),
+            fallback1: fallbackTierFromCategory('P20 SM-karsintasarja'),
+            fallback2: fallbackTierFromCategory('P20 SM'),
+          });
 
           // strong proven players one tier up should not collapse into low ceilings
           if (playerHighestTier < sideTier && playerEvidenceScore >= 900) {
@@ -1716,13 +1728,22 @@ export async function GET(req: Request) {
           return bScore - aScore;
         })
         .slice(0, 5)
-        .map((sr) => {
+        .map((sr, idx) => {
           const sTeamId = sr.spl_team_id ? String(sr.spl_team_id) : null;
           const imp = calcWeightedImportance([sr], seasonYear, playerBirthYear);
+          const isCurrentSeasonMain = idx === 0 && Number(sr.season_year) === seasonYear;
           return {
             season_year: seasonYear,
             spl_team_id: sTeamId,
-            team_name: sr.team_name ?? (sTeamId ? teamNameById.get(sTeamId) ?? null : null),
+            team_name: (() => {
+              const base = sr.team_name ?? (sTeamId ? teamNameById.get(sTeamId) ?? null : null);
+              const isYouth = isYouthCategory(sr.competition_category);
+              if (isYouth && sr.competition_category) {
+                const ageMatch = sr.competition_category.match(/[PpUu](\d+)/);
+                if (ageMatch) return `${base} U${ageMatch[1]}`;
+              }
+              return base;
+            })(),
             player_name: sr.player_name ?? p.name,
             matches_played: Number(sr.matches_played ?? 0),
             starts: Number(sr.starts ?? 0),
@@ -1730,10 +1751,10 @@ export async function GET(req: Request) {
             goals: Number(sr.goals ?? 0),
             yellows: Number(sr.yellows ?? 0),
             reds: Number(sr.reds ?? 0),
-            importance: imp.importance,
-            ceiling: imp.ceiling,
+            importance: isCurrentSeasonMain ? importance : Math.min(imp.importance, importanceCeiling),
+            ceiling: isCurrentSeasonMain ? importanceCeiling : Math.min(imp.ceiling, importanceCeiling),
             club_ctx: {
-              competition_tier: sr.competition_tier,
+              competition_tier: isYouthCategory(sr.competition_category) ? null : sr.competition_tier,
               competition_category: sr.competition_category,
               competition_name: sr.competition_category,
             },
@@ -1757,6 +1778,8 @@ export async function GET(req: Request) {
         .map((pr) => {
           const prevTeamId = pr.spl_team_id ? String(pr.spl_team_id) : null;
           const imp = calcWeightedImportance([pr], prevSeasonYear, playerBirthYear);
+          const prTier = Number(pr.competition_tier ?? 99);
+          const prCeiling = prTier < 99 ? tierBaseCeiling(prTier, false, isWomen) : imp.ceiling;
           return {
             season_year: prevSeasonYear,
             spl_team_id: prevTeamId,
@@ -1768,8 +1791,8 @@ export async function GET(req: Request) {
             goals: Number(pr.goals ?? 0),
             yellows: Number(pr.yellows ?? 0),
             reds: Number(pr.reds ?? 0),
-            importance: imp.importance,
-            ceiling: imp.ceiling,
+            importance: Math.min(imp.importance, prCeiling),
+            ceiling: prCeiling,
             club_ctx: {
               competition_tier: pr.competition_tier,
               competition_category: pr.competition_category,
@@ -1777,6 +1800,7 @@ export async function GET(req: Request) {
             },
           };
         });
+        
 
       return {
         ...p,

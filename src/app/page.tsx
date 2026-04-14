@@ -496,8 +496,7 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
                           <div key={i} className="flex flex-wrap gap-x-2 gap-y-0.5 items-baseline">
                             <span className={`font-mono shrink-0 ${i === 0 ? "text-sky-400/70" : "text-white/25"}`}>{s.season_year}</span>
                             <span className="text-white/60 shrink-0">{s.team_name ?? "—"}</span>
-                            {s.tier && <span className="text-white/30">T{s.tier}</span>}
-                            {s.position && <span className="text-white/30">Pos {s.position}</span>}
+                            {(s.tier ?? s.club_ctx?.competition_tier) && <span className="text-white/30">T{s.tier ?? s.club_ctx?.competition_tier}</span>}                            {s.position && <span className="text-white/30">Pos {s.position}</span>}
                             {s.minutes > 0 && <span className="text-white/40">{s.minutes}m</span>}
                             {s.starts > 0 && <span className="text-white/40">{s.starts}gs</span>}
                             {s.goals > 0 && <span className="text-emerald-400/70">⚽{s.goals}</span>}
@@ -506,6 +505,19 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
                             </span>
                           </div>
                         )) : <div className="text-white/30">No season data</div>}
+                        {(p.prevSeasons ?? []).map((s: any, i: number) => (
+                          <div key={`prev-${i}`} className="flex flex-wrap gap-x-2 gap-y-0.5 items-baseline opacity-60">
+                            <span className="font-mono shrink-0 text-white/25">{s.season_year}</span>
+                            <span className="text-white/50 shrink-0">{s.team_name ?? "—"}</span>
+                            {s.club_ctx?.competition_tier && <span className="text-white/30">T{s.club_ctx.competition_tier}</span>}
+                            {s.minutes > 0 && <span className="text-white/40">{s.minutes}m</span>}
+                            {s.starts > 0 && <span className="text-white/40">{s.starts}gs</span>}
+                            {s.goals > 0 && <span className="text-emerald-400/70">⚽{s.goals}</span>}
+                            <span className={`font-mono ml-auto ${s.ceiling > 0 && s.importance / s.ceiling >= 0.8 ? "text-emerald-400" : s.ceiling > 0 && s.importance / s.ceiling >= 0.5 ? "text-sky-400" : "text-white/40"}`}>
+                              {s.importance}/{s.ceiling}
+                            </span>
+                          </div>
+                        ))}
                       </td>
                     </tr>
                   )}
