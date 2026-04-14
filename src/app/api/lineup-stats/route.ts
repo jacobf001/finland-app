@@ -738,8 +738,8 @@ function computeGoals(params: {
   const homeAvgStrength = TIER_AVG[homeTier] ?? 0.18;
   const awayAvgStrength = TIER_AVG[awayTier] ?? 0.18;
 
-  const homeAttackMod = clamp(1 + (params.homeStrength - homeAvgStrength) * 2.0, 0.6, 1.6);
-  const awayAttackMod = clamp(1 + (params.awayStrength - awayAvgStrength) * 2.0, 0.6, 1.6);
+  const homeAttackMod = clamp(1 + (params.homeStrength - homeAvgStrength) * 1.5, 0.6, 1.6);
+  const awayAttackMod = clamp(1 + (params.awayStrength - awayAvgStrength) * 1.5, 0.6, 1.6);
 
   let homeXG = baseHome * homeAttackMod;
   let awayXG = baseAway * awayAttackMod;
@@ -1017,11 +1017,13 @@ async function getLikelyXI(teamId: string, seasonYear: number, matchGender: stri
     }
   }
 
-  const ranked = [...source].sort((a, b) => {
-    const aScore = Number(a.starts ?? 0) * 1000 + Number(a.minutes ?? 0);
-    const bScore = Number(b.starts ?? 0) * 1000 + Number(b.minutes ?? 0);
-    return bScore - aScore;
-  });
+  const ranked = [...source]
+    .filter(r => Number(r.starts ?? 0) > 0 || Number(r.minutes ?? 0) > 0)
+    .sort((a, b) => {
+      const aScore = Number(a.starts ?? 0) * 1000 + Number(a.minutes ?? 0);
+      const bScore = Number(b.starts ?? 0) * 1000 + Number(b.minutes ?? 0);
+      return bScore - aScore;
+    });
 
   const seen = new Set<string>();
   const out: Array<{ spl_player_id: string }> = [];
@@ -1031,7 +1033,7 @@ async function getLikelyXI(teamId: string, seasonYear: number, matchGender: stri
     if (!id || seen.has(id)) continue;
     seen.add(id);
     out.push({ spl_player_id: id });
-    if (out.length >= 11) break;
+    if (out.length >= 16) break;
   }
 
   return out;
@@ -1924,8 +1926,9 @@ export async function GET(req: Request) {
 
       const missingImpact = missing.reduce((s, p) => s + Number(p.importance ?? 0), 0);
       missing.sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0));
+      const filteredMissing = missing.filter(p => p.importance >= Math.round((p.importanceCeiling ?? 100) * 0.25));
 
-      return { missing, missingImpact };
+      return { missing: filteredMissing, missingImpact };
     }
 
     const [homeMissing, awayMissing] = await Promise.all([
