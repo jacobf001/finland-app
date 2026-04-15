@@ -11,10 +11,12 @@ function clsx(...xs: Array<string | false | null | undefined>) {
 const TIER_RANGES: Record<number, [number, number]> = {
   1: [0.30, 1.0],
   2: [0.20, 0.54],
-  3: [0.08, 0.34],
-  4: [0.05, 0.30],
-  5: [0.03, 0.22],
-  6: [0.01, 0.12],
+  3: [0.10, 0.36],
+  4: [0.06, 0.28],
+  5: [0.04, 0.24],
+  6: [0.02, 0.16],
+  7: [0.01, 0.10],
+  8: [0.01, 0.07],
 };
 
 function relativeStrength(strength: number, tier: number | null): number {
@@ -123,8 +125,14 @@ export default function HomePage() {
         {analysis && (
           <div className="space-y-6">
             <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-              <SideHeaderCard side="Home" team={analysis.teams?.home} ctx={{ ...analysis.teamStrengthDebug?.home, strength: analysis.teamStrength?.home }} />
-              <SideHeaderCard side="Away" team={analysis.teams?.away} ctx={{ ...analysis.teamStrengthDebug?.away, strength: analysis.teamStrength?.away }} />
+              <SideHeaderCard side="Home" team={analysis.teams?.home} ctx={{ 
+                ...analysis.teamStrengthDebug?.home, 
+                strength: analysis.teamStrength?.home
+              }} />
+              <SideHeaderCard side="Away" team={analysis.teams?.away} ctx={{ 
+                ...analysis.teamStrengthDebug?.away, 
+                strength: analysis.teamStrength?.away
+              }} />
             </div>
             <H2HCard
               h2h={analysis.h2h}
@@ -441,9 +449,34 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
   const [expanded, setExpanded] = useState<string[]>([]);
   function toggle(id: string) { setExpanded(prev => prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]); }
 
+function tierName(tier: number | null | undefined): string | null {
+  if (!tier) return null;
+  const map: Record<number, string> = {
+    1: "Veikkausliiga",
+    2: "Ykkösliiga",
+    3: "Ykkönen",
+    4: "Kakkonen",
+    5: "Kolmonen",
+    6: "Nelonen",
+    7: "Vitonen",
+    8: "Kutonen",
+    9: "Seiska",
+  };
+  return map[tier] ?? `T${tier}`;
+}
+
   return (
     <div className="rounded-2xl border border-white/8 bg-white/3 p-5">
-      <h3 className="text-sm font-semibold mb-3">{title}</h3>
+      <div className="flex items-baseline justify-between mb-3">
+        <h3 className="text-sm font-semibold">{title}</h3>
+        {rows.length > 0 && (() => {
+          const withYear = rows.filter(p => p.birth_year);
+          if (!withYear.length) return null;
+          const avgYear = Math.round(withYear.reduce((s, p) => s + p.birth_year, 0) / withYear.length);
+          const avgAge = new Date().getFullYear() - avgYear;
+          return <span className="text-xs text-white/30 font-mono">avg {avgAge} yrs ({avgYear})</span>;
+        })()}
+      </div>
       <div className="overflow-hidden rounded-xl border border-white/8">
         <table className="w-full text-sm">
           <thead>
@@ -474,6 +507,7 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
                     <td className="px-3 py-2.5 text-white/25 text-xs font-mono">{p.shirt_no ?? "—"}</td>
                     <td className="px-3 py-2.5">
                       <div className="font-medium text-white/90 text-sm">{p.name ?? `Player ${p.spl_player_id}`}</div>
+                      {p.birth_year && <div className="text-xs text-white/25 font-mono">{p.birth_year}</div>}
                     </td>
                     <td className="px-3 py-2.5 text-right text-white/50 text-xs font-mono hidden sm:table-cell">{p.season?.minutes ?? "—"}</td>
                     <td className="px-3 py-2.5 text-right text-white/50 text-xs font-mono hidden sm:table-cell">{p.season?.starts ?? "—"}</td>
@@ -496,7 +530,10 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
                           <div key={i} className="flex flex-wrap gap-x-2 gap-y-0.5 items-baseline">
                             <span className={`font-mono shrink-0 ${i === 0 ? "text-sky-400/70" : "text-white/25"}`}>{s.season_year}</span>
                             <span className="text-white/60 shrink-0">{s.team_name ?? "—"}</span>
-                            {(s.tier ?? s.club_ctx?.competition_tier) && <span className="text-white/30">T{s.tier ?? s.club_ctx?.competition_tier}</span>}                            {s.position && <span className="text-white/30">Pos {s.position}</span>}
+                            {(s.tier ?? s.club_ctx?.competition_tier) && (
+                            <span className="text-white/30">{tierName(s.tier ?? s.club_ctx?.competition_tier)}</span>
+                            )}                            
+                            {s.position && <span className="text-white/30">Pos {s.position}</span>}
                             {s.minutes > 0 && <span className="text-white/40">{s.minutes}m</span>}
                             {s.starts > 0 && <span className="text-white/40">{s.starts}gs</span>}
                             {s.goals > 0 && <span className="text-emerald-400/70">⚽{s.goals}</span>}
@@ -509,7 +546,7 @@ function PlayerAnalysisTable({ title, rows, accent }: { title: string; rows: any
                           <div key={`prev-${i}`} className="flex flex-wrap gap-x-2 gap-y-0.5 items-baseline opacity-60">
                             <span className="font-mono shrink-0 text-white/25">{s.season_year}</span>
                             <span className="text-white/50 shrink-0">{s.team_name ?? "—"}</span>
-                            {s.club_ctx?.competition_tier && <span className="text-white/30">T{s.club_ctx.competition_tier}</span>}
+                            {s.club_ctx?.competition_tier && <span className="text-white/30">{tierName(s.club_ctx.competition_tier)}</span>}
                             {s.minutes > 0 && <span className="text-white/40">{s.minutes}m</span>}
                             {s.starts > 0 && <span className="text-white/40">{s.starts}gs</span>}
                             {s.goals > 0 && <span className="text-emerald-400/70">⚽{s.goals}</span>}

@@ -379,15 +379,13 @@ function blendStrength(current: number, prev: number, played: number, tier: numb
   const w = clamp01(played / 8);
   const blended = w * current + (1 - w) * prev;
 
-  const TIER_FLOORS: Record<number, number> = { 1: 0.55, 2: 0.35, 3: 0.2, 4: 0.12, 5: 0.06 };
-  const TIER_CEILINGS: Record<number, number> = { 1: 1.0, 2: 0.54, 3: 0.34, 4: 0.19, 5: 0.11 };
+  const TIER_FLOORS: Record<number, number> = { 1: 0.55, 2: 0.35, 3: 0.2, 4: 0.12, 5: 0.06, 6: 0.03, 7: 0.02, 8: 0.01 };
 
   const t = Number.isFinite(Number(tier)) ? Number(tier) : null;
-  const floor = t !== null ? (TIER_FLOORS[t] ?? 0.04) : 0;
-  const ceiling = t !== null ? (TIER_CEILINGS[t] ?? 1.0) : 1.0;
+  const floor = t !== null ? (TIER_FLOORS[t] ?? 0.01) : 0;
   const effectiveFloor = floor * Math.max(0, 1 - played / 8);
 
-  return clamp01(Math.min(Math.max(blended, effectiveFloor), ceiling));
+  return clamp01(Math.max(blended, effectiveFloor));
 }
 
 function chooseBestTeamTableRow(
@@ -680,14 +678,15 @@ function computeOdds(params: {
 }
 
 const TIER_GOAL_BASELINES: Record<number, [number, number]> = {
-  1: [1.66, 1.47],  // Veikkausliiga (351 matches)
-  2: [1.70, 1.49],  // Ykkösliiga (274 matches)
-  3: [1.95, 1.56],  // Ykkönen (330 matches)
-  4: [2.32, 1.80],  // Miesten Kakkonen (696 matches)
-  5: [2.40, 1.97],  // Miesten Kolmonen (2183 matches)
-  6: [2.57, 2.09],  // Miesten Nelonen (2534 matches)
-  7: [2.25, 2.21],  // Miesten Seiska (676 matches)
-  8: [2.93, 2.53],  // Miesten Vitonen (3502 matches)
+  1: [1.65, 1.45],  // Veikkausliiga (356 matches)
+  2: [1.68, 1.48],  // Ykkösliiga (279 matches)
+  3: [1.94, 1.57],  // Ykkönen (336 matches blended)
+  4: [2.32, 1.80],  // Kakkonen (696 matches)
+  5: [2.40, 1.97],  // Kolmonen (2182 matches)
+  6: [2.57, 2.09],  // Nelonen (2538 matches)
+  7: [2.93, 2.53],  // Vitonen — DB stores as tier 8 (3502 matches)
+  8: [2.80, 2.41],  // Kutonen — DB stores as tier 9 (3613 matches)
+  9: [2.25, 2.21],  // Seiska — DB stores as tier 7 (676 matches)
 };
 
 
@@ -867,16 +866,21 @@ function calcWeightedImportance(
         : (fallbackTier ?? 99);
 
     const isYouth = isYouthCategory(row.competition_category);
-    const youthDiscount = isYouth 
+    const isReserve = /\/2(\s|$)|\/3(\s|$)|\bII\b|\/[Rr]eservi\b|\bAkatemia\b/i.test(row.team_name ?? "");
+
+    const youthDiscount = isYouth
       ? (row.competition_category?.toLowerCase().includes("p20") || row.competition_category?.toLowerCase().includes("p21") ? 0.6 : 0.35)
       : 1.0;
-    const wmins = Number(row.minutes ?? 0) * youthDiscount;
+    const reserveDiscount = isReserve ? 0.35 : 1.0;
+    const combinedDiscount = youthDiscount * reserveDiscount;
 
-    totalMins += Number(row.minutes ?? 0) * youthDiscount;
-    totalStarts += Number(row.starts ?? 0) * youthDiscount;
-    if (!isYouth) totalGoals += Number(row.goals ?? 0);
-    totalYellows += Number(row.yellows ?? 0) * youthDiscount;
-    totalReds += Number(row.reds ?? 0) * youthDiscount;
+    const wmins = Number(row.minutes ?? 0) * combinedDiscount;
+
+    totalMins += Number(row.minutes ?? 0) * combinedDiscount;
+    totalStarts += Number(row.starts ?? 0) * combinedDiscount;
+    if (!isYouth && !isReserve) totalGoals += Number(row.goals ?? 0);
+    totalYellows += Number(row.yellows ?? 0) * combinedDiscount;
+    totalReds += Number(row.reds ?? 0) * combinedDiscount;
 
     if (wmins > bestOverallWMins) {
       bestOverallWMins = wmins;
@@ -938,6 +942,9 @@ function calcWeightedImportance(
 
 const TEAM_HISTORY_MAP: Record<string, string> = {
   "35209545": "143879", // IF Gnistan -> PK-35
+  "35203972": "35160028", // Jippo-j/PunaMusta match API alias -> canonical DB ID
+   "35203985": "60893",    // PK-37 match API alias -> canonical DB ID
+   "35203987": "107140",   // ToU
 };
 
 function resolveHistoricalTeamId(teamId: string): string {
@@ -1198,8 +1205,8 @@ export async function GET(req: Request) {
       allPrevRowsByPlayer.set(id, arr);
     }
 
-    const homeTeamId = teams.home.spl_team_id;
-    const awayTeamId = teams.away.spl_team_id;
+    const homeTeamId = teams.home.spl_team_id ? resolveHistoricalTeamId(teams.home.spl_team_id) : null;
+    const awayTeamId = teams.away.spl_team_id ? resolveHistoricalTeamId(teams.away.spl_team_id) : null;
 
     const teamNameById = new Map<string, string>();
     const teamIdsToLoad = Array.from(new Set([homeTeamId, awayTeamId].filter(Boolean))) as string[];
@@ -1353,6 +1360,7 @@ export async function GET(req: Request) {
 
     const homeTier = homeCurrentStrengthBits.tier ?? homePrevStrengthBits.tier ?? null;
     const awayTier = awayCurrentStrengthBits.tier ?? awayPrevStrengthBits.tier ?? null;
+    console.log("DEBUG tiers:", { homeTier, awayTier });
 
     const isWomen =
       String(matchGender ?? "").toLowerCase() === "female" ||
@@ -1568,17 +1576,29 @@ export async function GET(req: Request) {
       if (currResult !== null && prevResult !== null) {
         const currEvidence = chosenRows.reduce(
           (sum, r) =>
-            sum +
+            (Number(r.competition_tier ?? 99) >= 99) ? sum : sum +
             Number(r.minutes ?? 0) +
             Number(r.starts ?? 0) * 90 +
             Number(r.matches_played ?? 0) * 20,
           0,
         );
 
-        const prevWeight = Math.max(0, 1 - currEvidence / 500) * 0.3;
+        const prevWeight = Math.max(0, 1 - currEvidence / 500) * (currEvidence < 200 ? 0.55 : 0.3);
         importance = Math.round(
           currResult.importance * (1 - prevWeight) + prevResult.importance * prevWeight,
         );
+
+        if (String(p.spl_player_id) === "80987") {
+          console.log("DEBUG Mertanen:", {
+            currEvidence,
+            prevWeight,
+            currImportance: currResult.importance,
+            prevImportance: prevResult.importance,
+            blended: importance,
+            currCeiling: currResult.ceiling,
+            prevCeiling: prevResult.ceiling,
+          });
+        }
       } else if (currResult !== null) {
         importance = currResult.importance;
       } else if (prevResult !== null) {
@@ -1588,6 +1608,16 @@ export async function GET(req: Request) {
 
       const sideTierRaw = side === "home" ? homeTier : awayTier;
       const sideTier = Number.isFinite(Number(sideTierRaw)) ? Number(sideTierRaw) : 99;
+      if (String(p.spl_player_id) === "80987" || p.name?.includes("Kovalainen")) {
+        console.log("DEBUG enrich sideTier:", { 
+          name: p.name, 
+          side, 
+          sideTierRaw, 
+          sideTier,
+          importanceCeiling,
+          importance 
+        });
+      }
 
       if (sideTier < 99) {
           const sideCeiling = isWomen
@@ -1603,30 +1633,31 @@ export async function GET(req: Request) {
                 : sideTier === 3
                   ? 64
                   : sideTier === 4
-                    ? 50
+                    ? 55
                     : sideTier === 5
-                      ? 36
+                      ? 45
                       : 28;
 
           const tierRowsForCap = broadChosenRows.length > 0 ? broadChosenRows : chosenRows;
 
           const playerHighestTier = tierRowsForCap.reduce((best: number, r) => {
-            const fallbackTier = fallbackTierFromCategory(r.competition_category);
-            const t =
-              Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
-                ? Number(r.competition_tier)
-                : (fallbackTier ?? 99);
+          const fallbackTier = fallbackTierFromCategory(r.competition_category);
+          const t =
+            Number.isFinite(Number(r.competition_tier)) && Number(r.competition_tier) < 90
+              ? Number(r.competition_tier)
+              : (fallbackTier ?? 99);
 
-            const mins = Number(r.minutes ?? 0);
-            const starts = Number(r.starts ?? 0);
-            const isYouthRow = isYouthCategory(r.competition_category);
+          const mins = Number(r.minutes ?? 0);
+          const starts = Number(r.starts ?? 0);
+          const isYouthRow = isYouthCategory(r.competition_category);
+          const isReserveRow = /\/2(\s|$)|\/3(\s|$)|\bII\b|\/[Rr]eservi\b|\bAkatemia\b/i.test(r.team_name ?? "");
 
-            // Don't use youth rows for highest tier calculation
-            if (isYouthRow) return best;
+          // Don't use youth or reserve rows for highest tier calculation
+          if (isYouthRow || isReserveRow) return best;
 
-            const hasEvidence = mins >= 450 || (starts >= 5 && mins >= 200);
-            return hasEvidence && t < best ? t : best;
-          }, 99);
+          const hasEvidence = mins >= 450 || (starts >= 5 && mins >= 200);
+          return hasEvidence && t < best ? t : best;
+        }, 99);
         
           const playerEvidenceScore = tierRowsForCap.reduce((sum, r) => {
             return (
@@ -1921,9 +1952,9 @@ export async function GET(req: Request) {
                 : sideTier === 3
                   ? 64
                   : sideTier === 4
-                    ? 50
+                    ? 55
                     : sideTier === 5
-                      ? 36
+                      ? 45
                       : 28
           : 100;
 
