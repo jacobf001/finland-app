@@ -583,16 +583,16 @@ function computeOdds(params: {
   // 1. Table strength — normalised within tier
   const homeRelStr = relativeStrengthNorm(params.homeTableStrength, params.homeTier);
   const awayRelStr = relativeStrengthNorm(params.awayTableStrength, params.awayTier);
-  const strengthZ = clamp(homeRelStr - awayRelStr, -1, 1) * 1.5;
+  const strengthZ = clamp(homeRelStr - awayRelStr, -1, 1) * 3.0;
 
   // 2. Missing impact — who's absent today
   const MISSING_CEILINGS: Record<number, number> = { 1: 92, 2: 78, 3: 64, 4: 50, 5: 36, 6: 28 };
   const homeMissingNorm = clamp(
-    params.homeMissingImpact / ((MISSING_CEILINGS[homeTier] ?? 50) * 4),
+    params.homeMissingImpact / ((MISSING_CEILINGS[homeTier] ?? 50) * 6),
     0, 1
   );
   const awayMissingNorm = clamp(
-    params.awayMissingImpact / ((MISSING_CEILINGS[awayTier] ?? 50) * 4),
+    params.awayMissingImpact / ((MISSING_CEILINGS[awayTier] ?? 50) * 6),
     0, 1
   );
   const missingZ = clamp((awayMissingNorm - homeMissingNorm) * 1.5, -1, 1);
