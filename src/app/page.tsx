@@ -9,14 +9,14 @@ function clsx(...xs: Array<string | false | null | undefined>) {
 }
 
 const TIER_RANGES: Record<number, [number, number]> = {
-  1: [0.30, 1.0],
-  2: [0.20, 0.54],
-  3: [0.10, 0.36],
-  4: [0.06, 0.28],
-  5: [0.04, 0.24],
-  6: [0.02, 0.16],
-  7: [0.01, 0.10],
-  8: [0.01, 0.07],
+  1: [0.14, 0.84],
+  2: [0.11, 0.68],
+  3: [0.06, 0.55],
+  4: [0.03, 0.42],
+  5: [0.03, 0.31],
+  6: [0.02, 0.25],
+  7: [0.01, 0.21],
+  8: [0.01, 0.21],
 };
 
 function relativeStrength(strength: number, tier: number | null): number {

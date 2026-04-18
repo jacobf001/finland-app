@@ -546,11 +546,24 @@ function computeOverall(params: {
   return Math.round(clamp01(overallN) * 100);
 }
 
+function relativeStrengthNorm(strength: number, tier: number | null): number {
+  const TIER_RANGES: Record<number, [number, number]> = {
+    1: [0.14, 0.84], 2: [0.11, 0.68], 3: [0.06, 0.55],
+    4: [0.03, 0.42], 5: [0.03, 0.31], 6: [0.02, 0.25],
+    7: [0.01, 0.21], 8: [0.01, 0.21],
+  };
+  const t = Number.isFinite(Number(tier)) ? Number(tier) : 5;
+  const [lo, hi] = TIER_RANGES[t] ?? [0, 1];
+  return clamp01((strength - lo) / Math.max(0.01, hi - lo));
+}
+
 function computeOdds(params: {
   homeTier: number | null;
   awayTier: number | null;
   homeRawStrength: number;
   awayRawStrength: number;
+  homeTableStrength: number;
+  awayTableStrength: number;
   homeMissingImpact: number;
   awayMissingImpact: number;
   homePosition: number | null;
@@ -566,87 +579,32 @@ function computeOdds(params: {
 }) {
   const homeTier = Number.isFinite(Number(params.homeTier)) ? Number(params.homeTier) : 6;
   const awayTier = Number.isFinite(Number(params.awayTier)) ? Number(params.awayTier) : 6;
-  const sameTier = homeTier === awayTier;
-  const shellGap = Math.abs(params.homeRawStrength - params.awayRawStrength);
 
-  function lineupBaseline(tier: number, women = false) {
-    if (women) {
-      if (tier <= 1) return 470;
-      if (tier === 2) return 380;
-      if (tier === 3) return 300;
-      if (tier === 4) return 220;
-      if (tier === 5) return 170;
-      return 140;
-    }
+  // 1. Table strength — normalised within tier
+  const homeRelStr = relativeStrengthNorm(params.homeTableStrength, params.homeTier);
+  const awayRelStr = relativeStrengthNorm(params.awayTableStrength, params.awayTier);
+  const strengthZ = clamp(homeRelStr - awayRelStr, -1, 1) * 1.5;
 
-    if (tier <= 1) return 520;
-    if (tier === 2) return 430;
-    if (tier === 3) return 340;
-    if (tier === 4) return 260;
-    if (tier === 5) return 210;
-    return 170;
-  }
-
-  const homeLineupRatio = clamp(
-    params.homeLineupTotal / lineupBaseline(homeTier, params.women ?? false),
-    0,
-    1.6
-  );
-  const awayLineupRatio = clamp(
-    params.awayLineupTotal / lineupBaseline(awayTier, params.women ?? false),
-    0,
-    1.6
-  );
-
-  const rawStrengthDiff = clamp(params.homeRawStrength - params.awayRawStrength, -1, 1);
-  const strengthZ = rawStrengthDiff * 1.2;
-
-  const lineupZRaw = (homeLineupRatio - awayLineupRatio) * 4.0;
-  const lineupZ = lineupZRaw * 0.8;
-
+  // 2. Missing impact — who's absent today
   const MISSING_CEILINGS: Record<number, number> = { 1: 92, 2: 78, 3: 64, 4: 50, 5: 36, 6: 28 };
   const homeMissingNorm = clamp(
     params.homeMissingImpact / ((MISSING_CEILINGS[homeTier] ?? 50) * 4),
-    0,
-    1
+    0, 1
   );
   const awayMissingNorm = clamp(
     params.awayMissingImpact / ((MISSING_CEILINGS[awayTier] ?? 50) * 4),
-    0,
-    1
+    0, 1
   );
+  const missingZ = clamp((awayMissingNorm - homeMissingNorm) * 1.5, -1, 1);
 
-  const sameTierMissingMultiplier =
-    sameTier
-      ? (shellGap < 0.08 ? 1.6 : 2.2)
-      : 2.2;
-
-  const missingAdjRaw = clamp(
-    (awayMissingNorm - homeMissingNorm) * sameTierMissingMultiplier,
-    -1.5,
-    1.5
-  );
-  const missingAdj = missingAdjRaw * 0.85;
-
-  const homeMissingGoalsZ = clamp(params.homeMissingGoals * 0.55, 0, 1.0);
-  const awayMissingGoalsZ = clamp(params.awayMissingGoals * 0.55, 0, 1.0);
-  const missingGoalsAdj = awayMissingGoalsZ - homeMissingGoalsZ;
-
-  const isNewSeason = params.homePlayed <= 3 || params.awayPlayed <= 3;
-  const playedWeight = isNewSeason
-    ? clamp01(Math.min(params.homePlayed, params.awayPlayed) / 6) * 0.3
-    : clamp01(Math.min(params.homePlayed, params.awayPlayed) / 6);
-  const posGap = (params.awayPosition ?? 6) - (params.homePosition ?? 6);
-  const posZ = (sameTier && params.sameCompetition)
-    ? clamp(posGap * 0.10, -0.7, 0.7) * playedWeight
-    : 0;
-
+  // 3. Tier gap — cross tier matches
   const tierGap = awayTier - homeTier;
   const tierAdv = clamp(tierGap * 0.25, -0.7, 0.7);
 
-  const homeAdv = 0.16;
+  // 4. Home advantage
+  const homeAdv = 0.12;
 
-  const z = lineupZ + missingAdj + missingGoalsAdj + strengthZ + posZ + tierAdv + homeAdv;
+  const z = strengthZ + missingZ + tierAdv + homeAdv;
 
   const pHomeRaw = sigmoid(z);
   const pAwayRaw = 1 - pHomeRaw;
@@ -866,7 +824,9 @@ function calcWeightedImportance(
         : (fallbackTier ?? 99);
 
     const isYouth = isYouthCategory(row.competition_category);
-    const isReserve = /\/2(\s|$)|\/3(\s|$)|\bII\b|\/[Rr]eservi\b|\bAkatemia\b/i.test(row.team_name ?? "");
+    const isReserve = 
+      /\/2(\s|$)|\/3(\s|$)|\bII\b|\/[Rr]eservi\b|\bAkatemia\b/i.test(row.team_name ?? "") &&
+      (row.competition_tier == null || Number(row.competition_tier) >= 7 || isYouth);
 
     const youthDiscount = isYouth
       ? (row.competition_category?.toLowerCase().includes("p20") || row.competition_category?.toLowerCase().includes("p21") ? 0.6 : 0.35)
@@ -945,6 +905,8 @@ const TEAM_HISTORY_MAP: Record<string, string> = {
   "35203972": "35160028", // Jippo-j/PunaMusta match API alias -> canonical DB ID
    "35203985": "60893",    // PK-37 match API alias -> canonical DB ID
    "35203987": "107140",   // ToU
+   "35203971": "106598",   // FC Blackbird
+  "35203973": "108351",   // JJK Jyväskylä/2
 };
 
 function resolveHistoricalTeamId(teamId: string): string {
@@ -2030,6 +1992,8 @@ export async function GET(req: Request) {
       awayTier: awayEffectiveTier,
       homeRawStrength: homeRating.effectiveStrength,
       awayRawStrength: awayRating.effectiveStrength,
+      homeTableStrength: homeStrength,
+      awayTableStrength: awayStrength,
       homeMissingImpact: homeMissingImpactForOdds,
       awayMissingImpact: awayMissingImpactForOdds,
       homePosition: homeCurrentStrengthBits.position,
@@ -2078,8 +2042,8 @@ export async function GET(req: Request) {
     const goalsModel = computeGoals({
       homeTier,
       awayTier,
-      homeStrength,
-      awayStrength,
+      homeStrength: homeStrength,
+      awayStrength: awayStrength,
       homeMissingGoals: missingGoalsPerGame(homeMissing.missing, homeTier),
       awayMissingGoals: missingGoalsPerGame(awayMissing.missing, awayTier),
       women: isWomen,
