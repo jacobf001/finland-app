@@ -858,13 +858,15 @@ function calcWeightedImportance(
     }
   }
 
+  let isPrimaryYouthOverride = false;
   if (seniorMinsTotal >= 540 && bestSeniorTierByMins < 99) {
     primaryTier = bestSeniorTierByMins;
+    isPrimaryYouthOverride = true; // senior evidence won, don't let youth category set the ceiling
   } else if (bestOverallTier < 99) {
     primaryTier = bestOverallTier;
   }
 
-  const isPrimaryYouth = isYouthCategory(primaryCategory);
+  const isPrimaryYouth = isPrimaryYouthOverride ? false : isYouthCategory(primaryCategory);
   const maxGames = primaryTier < 99 ? maxGamesForTier(primaryTier, isPrimaryYouth, women) : women ? 18 : 22;
   const importanceCeiling = primaryTier < 99 ? tierBaseCeiling(primaryTier, isPrimaryYouth, women) : women ? 22 : 64;
   if (totalStarts > 14) {
@@ -1630,7 +1632,17 @@ export async function GET(req: Request) {
             );
           }, 0);
 
+          const isPrimaryYouthOverride = playerHighestTier < 99 && playerHighestTier <= sideTier;
+          if (isPrimaryYouthOverride) {
+            importanceCeiling = Math.max(importanceCeiling, tierBaseCeiling(playerHighestTier, false, isWomen));
+          }
           let effectiveCeiling = Math.min(sideCeiling, importanceCeiling);
+
+
+          // If player has proven senior tier evidence, don't let youth rows drag the ceiling down
+          if (playerHighestTier < 99 && !isPrimaryYouthOverride) {
+            importanceCeiling = Math.max(importanceCeiling, tierBaseCeiling(playerHighestTier, false, isWomen));
+          }
 
           if (playerHighestTier < 99) {
             if (playerHighestTier < sideTier) {
