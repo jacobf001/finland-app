@@ -136,9 +136,10 @@ function normalizeCategoryKey(category: string | null | undefined): string {
   if (c.includes("kansallinen ykkönen")) return "women_t2";
   if (c.includes("kansallinen kakkonen")) return "women_t3";
 
+  if (c.includes("suomen cup")) return "cup";
+
   if (c.includes("naiset") || c.includes("naisten") || c.includes("women")) return "women";
   if (c.includes("miehet") || c.includes("miesten") || c.includes("men")) return "men";
-  if (c.includes("suomen cup")) return "cup";
 
   return c;
 }
@@ -188,7 +189,15 @@ function pickPreferredRows(
 ) {
   if (!rows.length) return [];
 
+  if (rows.some(r => r.minutes === 2250)) {
+    console.log("DEBUG pickPreferred input:", { teamId, preferredCategoryKey, preferredGender, rows: rows.map(r => ({ team: r.spl_team_id, mins: r.minutes, gender: r.gender, cat: r.competition_category })) });
+  }
+
   const genderRows = rows.filter((r) => genderMatches(r.gender, preferredGender));
+
+  if (rows.some(r => r.minutes === 2250)) {
+    console.log("DEBUG pickPreferred genderRows:", genderRows.map(r => ({ mins: r.minutes, gender: r.gender })));
+  }
 
   const teamRows = teamId
     ? genderRows.filter((r) => String(r.spl_team_id ?? "") === String(teamId))
@@ -200,11 +209,21 @@ function pickPreferredRows(
       : [];
 
   if (teamAndCategoryRows.length > 0) {
-    return teamAndCategoryRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
+    const catMins = teamAndCategoryRows.reduce((s, r) => s + Number(r.minutes ?? 0), 0);
+    const teamMins = teamRows.reduce((s, r) => s + Number(r.minutes ?? 0), 0);
+    // Only prefer category rows if they have substantial minutes relative to team total
+    if (catMins >= teamMins * 0.3) {
+      return teamAndCategoryRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
+    }
   }
 
   if (teamRows.length > 0) {
-    return teamRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
+    const sorted = teamRows.slice().sort((a, b) => Number(b.minutes ?? 0) - Number(a.minutes ?? 0));
+    if (teamRows.some(r => r.minutes === 2250)) {
+      console.log("DEBUG pickPreferredRows teamRows:", teamRows.map(r => ({ mins: r.minutes, cat: r.competition_category, tier: r.competition_tier })));
+      console.log("DEBUG pickPreferredRows sorted[0]:", sorted[0]);
+    }
+    return sorted;
   }
 
   const categoryRows = preferredCategoryKey
@@ -1864,6 +1883,7 @@ export async function GET(req: Request) {
               red_cards
             `)
             .eq("season_year", seasonYear)
+            .eq("spl_team_id", teamId)
             .in("spl_player_id", missingIdsNum),
           supabaseAdmin
             .from("player_season_stats")
@@ -1935,6 +1955,10 @@ export async function GET(req: Request) {
       const missing = Array.from(missingRowsByPlayer.entries()).map(([pid, { rows, seasonCtx }]) => {
         const sideCategoryKey = side === "home" ? homeCategoryKey : awayCategoryKey;
         const preferredRows = pickPreferredRows(rows, teamId, sideCategoryKey, matchGender);
+        if (pid === '1227836') {
+          console.log("DEBUG Adebanjo sideCategoryKey:", sideCategoryKey);
+          console.log("DEBUG Adebanjo normKeys:", rows.map(r => ({ cat: r.competition_category, key: normalizeCategoryKey(r.competition_category) })));
+        }
         const best = preferredRows.reduce((a, b) =>
           Number(a.minutes ?? 0) >= Number(b.minutes ?? 0) ? a : b,
         );
@@ -1955,6 +1979,8 @@ export async function GET(req: Request) {
 
       const missingImpact = missing.reduce((s, p) => s + Number(p.importance ?? 0), 0);
       missing.sort((a, b) => (b.importance ?? 0) - (a.importance ?? 0));
+      console.log("DEBUG missingIds:", missingIds);
+      console.log("DEBUG missing before filter:", missing.map(p => ({ name: p.player_name, imp: p.importance, ceil: p.importanceCeiling })));
       const filteredMissing = missing.filter(p => p.importance >= Math.round((p.importanceCeiling ?? 100) * 0.25));
 
       return { missing: filteredMissing, missingImpact };
